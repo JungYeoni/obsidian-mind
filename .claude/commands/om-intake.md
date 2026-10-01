@@ -1,5 +1,5 @@
 ---
-description: "Process all unread meeting notes in work/meetings/ — reads each file, classifies content, routes to the right vault notes, then clears the inbox."
+description: "Process all unread meeting notes in work/meetings/ — reads each file, classifies content, routes to the right vault notes, then archives the original to work/meetings/_sources/."
 ---
 
 # Meeting Intake
@@ -61,6 +61,7 @@ For 1:1 notes, use this structure:
 date: YYYY-MM-DD
 description: "1:1 with <Person> — <one-line summary>"
 person: <Person Name>
+source: "work/meetings/_sources/<original filename>.md"
 tags:
   - work-note
   - 1-1
@@ -91,13 +92,19 @@ After routing all content:
 - Every existing note updated must have its Related section checked — add any new links that are now relevant
 - If a person was mentioned, link to their `org/people/` note from the work note and vice versa
 
-### 6. Clear the Inbox
+### 6. Archive the Source
 
-After processing each file, confirm what was routed and ask:
+AI summaries are lossy — keep the original so a later session can check what was actually said against what got extracted.
 
-> "Done processing `<filename>`. Delete from inbox?"
+After a file is fully routed, move it (don't delete it) to `work/meetings/_sources/<same filename>` — create that folder if it doesn't exist yet. Then add a `source:` frontmatter field to every note this file was routed into, pointing at the archived path, e.g.:
 
-If yes, delete the file. If no, leave it and move on.
+```yaml
+source: "work/meetings/_sources/2026-09-25 Team Sync.md"
+```
+
+If a note already has a `source:` field from an earlier intake (content appended from a second file), don't overwrite it — append the new path as a list instead: `source: ["work/meetings/_sources/...", "work/meetings/_sources/..."]`.
+
+No confirmation needed before archiving — this only moves the file within the vault, it never deletes anything.
 
 After all files are processed, present a summary:
 
@@ -128,13 +135,17 @@ Processed: <N> file(s)
 - <win>
 - ...
 
+### Archived
+- <filename> → work/meetings/_sources/<filename>
+- ...
+
 ### Items That Needed a Judgment Call
 (anything you weren't sure how to classify — ask the user)
 ```
 
 ## Important
 
-- **Never delete a file without confirmation** — always ask first
+- **Never delete the original** — archive it to `work/meetings/_sources/` instead, always, no confirmation needed since nothing is lost
 - If a note is ambiguous (can't tell who the meeting was with, or what project it belongs to), ask before routing
 - Prefer appending to existing notes over creating new ones for small updates
 - If the file has no date in its name, use today's date

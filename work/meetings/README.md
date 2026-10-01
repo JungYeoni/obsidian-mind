@@ -15,7 +15,7 @@ Drop exported or raw meeting notes here. Run `/om-intake` to process all files �
 - Wins → `perf/Brag Doc.md`
 - Action items → relevant work notes
 
-**This folder is a staging area, not storage.** Once a note is processed, `/om-intake` will ask to delete the raw export.
+**This folder is a staging area, not storage.** Once a note is processed, `/om-intake` moves the raw export to `work/meetings/_sources/` — AI summaries are lossy, so the original is kept as ground truth to check the routed notes against later. Each note `/om-intake` creates or updates carries a `source:` field pointing back to its archived original.
 
 ## Naming Convention
 

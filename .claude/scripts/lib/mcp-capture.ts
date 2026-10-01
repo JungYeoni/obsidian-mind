@@ -136,12 +136,11 @@ export function clampDescription(text: unknown, max: number = DESCRIPTION_MAX): 
  *
  * Exact match, then case-insensitive, then a prefix match in either direction —
  * a repo and its project folder usually agree but not always ("poc" vs
- * "pocket"). Returns null when the vault has no `projects/` folder at all,
- * which a clean install of this template does not.
+ * "pocket"). Returns null when the vault has no `work/active/` folder.
  */
 export function projectDirFor(vaultRoot: string, caller: string | null): { name: string; dir: string } | null {
 	if (!caller) return null;
-	const root = join(vaultRoot, "projects");
+	const root = join(vaultRoot, "work", "active");
 	if (!existsSync(root)) return null;
 
 	let entries: string[];
@@ -219,7 +218,7 @@ export function resolveDestination(
 		const sub = kind === "decision" ? "decisions" : "notes";
 		return {
 			dir: join(proj.dir, sub),
-			rel: `projects/${proj.name}/${sub}`,
+			rel: `work/active/${proj.name}/${sub}`,
 			project: proj.name,
 			routed: "caller-identity",
 		};

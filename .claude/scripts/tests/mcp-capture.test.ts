@@ -34,7 +34,7 @@ import { resolvableNames } from "../lib/mcp-memory-bridge.ts";
 import { rmTemp } from "./_helpers.ts";
 
 const NOW = new Date("2026-07-26T10:00:00Z");
-const POLICY: ExposurePolicy = { roots: ["brain", "projects"], neverExpose: new Set(), source: "manifest", memoryRoot: "memories" };
+const POLICY: ExposurePolicy = { roots: ["brain", "work/active"], neverExpose: new Set(), source: "manifest", memoryRoot: "memories" };
 
 function withVault(fn: (dir: string) => void): void {
 	const dir = mkdtempSync(join(tmpdir(), "cap-"));
@@ -86,15 +86,14 @@ describe("slugifying a title", () => {
 describe("finding a project folder", () => {
 	test("exact, case-insensitive and prefix matches all resolve", () => {
 		withVault((dir) => {
-			mkdirSync(join(dir, "projects", "pocket"), { recursive: true });
+			mkdirSync(join(dir, "work", "active", "pocket"), { recursive: true });
 			assert.equal(projectDirFor(dir, "pocket")?.name, "pocket");
 			assert.equal(projectDirFor(dir, "Pocket")?.name, "pocket");
 			assert.equal(projectDirFor(dir, "poc")?.name, "pocket", "repo and folder names do not always agree");
 		});
 	});
 
-	test("a vault with no projects/ folder is null, not a crash", () => {
-		// A clean install of this template has no projects/ at all.
+	test("a vault with no work/active/ folder is null, not a crash", () => {
 		withVault((dir) => assert.equal(projectDirFor(dir, "pocket"), null));
 	});
 
@@ -163,7 +162,7 @@ describe("resolving the destination", () => {
 		// test against the vault accepted it — and the capture landed in work/,
 		// which nobody named. Containment has to be against the DECLARED ROOT.
 		withVault((dir) => {
-			for (const escape of ["brain/../work", "brain/../../vault/work", "brain/./../org", "projects/../perf"]) {
+			for (const escape of ["brain/../work", "brain/../../vault/work", "brain/./../org", "work/active/../archive"]) {
 				assert.throws(() => resolveDestination(dir, POLICY, {}, "atlas", escape, "note"), /refused/, escape);
 			}
 		});
@@ -171,18 +170,18 @@ describe("resolving the destination", () => {
 
 	test("caller identity routes into the matching project", () => {
 		withVault((dir) => {
-			mkdirSync(join(dir, "projects", "atlas"), { recursive: true });
+			mkdirSync(join(dir, "work", "active", "atlas"), { recursive: true });
 			const d = resolveDestination(dir, POLICY, {}, "atlas", undefined, "note");
 			assert.equal(d.routed, "caller-identity");
-			assert.equal(d.rel, "projects/atlas/notes");
+			assert.equal(d.rel, "work/active/atlas/notes");
 			assert.equal(d.project, "atlas");
 		});
 	});
 
 	test("a decision routes to decisions/ rather than notes/", () => {
 		withVault((dir) => {
-			mkdirSync(join(dir, "projects", "atlas"), { recursive: true });
-			assert.equal(resolveDestination(dir, POLICY, {}, "atlas", undefined, "decision").rel, "projects/atlas/decisions");
+			mkdirSync(join(dir, "work", "active", "atlas"), { recursive: true });
+			assert.equal(resolveDestination(dir, POLICY, {}, "atlas", undefined, "decision").rel, "work/active/atlas/decisions");
 		});
 	});
 
@@ -205,7 +204,7 @@ describe("resolving the destination", () => {
 // ---------------------------------------------------------------------------
 
 describe("rendering a capture", () => {
-	const dest: Destination = { dir: "/v/projects/atlas/notes", rel: "projects/atlas/notes", project: "atlas", routed: "caller-identity" };
+	const dest: Destination = { dir: "/v/work/active/atlas/notes", rel: "work/active/atlas/notes", project: "atlas", routed: "caller-identity" };
 
 	test("carries frontmatter the vault's own validator would accept", () => {
 		const md = renderCapture(BASIC, dest, "atlas", new Set(["atlas"]), NOW);
@@ -352,7 +351,7 @@ describe("writing a capture", () => {
 // ---------------------------------------------------------------------------
 
 describe("a capture is reachable by its own title", () => {
-	const dest: Destination = { dir: "/v/projects/atlas/notes", rel: "projects/atlas/notes", project: "atlas", routed: "caller-identity" };
+	const dest: Destination = { dir: "/v/work/active/atlas/notes", rel: "work/active/atlas/notes", project: "atlas", routed: "caller-identity" };
 
 	test("the title is carried as an alias, because the basename never is", () => {
 		const title = "I3 lands: a soak over the whole pipeline";

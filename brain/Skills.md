@@ -55,6 +55,7 @@ Custom slash commands, subagents, and reusable workflows. Defined in `.claude/co
 | `/om-vault-audit` | Deep structural audit — indexes, frontmatter, links, Bases, folder placement, stale context |
 | `/om-vault-upgrade` | Import content from an existing vault — detects version, classifies notes, transforms frontmatter, rebuilds indexes |
 | `/om-project-archive` | Move completed project from `work/active/` to `work/archive/YYYY/`, update all indexes — moves whole `active/<Topic>/` clusters intact |
+| `/om-historical-import` | 완료된 과거 프로젝트를 source·confidence와 함께 복원하고 검토 후 `work/archive/<year>/<project>/`에 발행 |
 | `/om-tidy` | Self-maintenance pass — acts on every hygiene flag: archives completed work, groups clusters, splits oversized notes, reports open loops. Never deletes, never commits |
 
 ## Usage Notes
@@ -81,6 +82,7 @@ Custom slash commands, subagents, and reusable workflows. Defined in `.claude/co
 - `/om-vault-audit` should be run at the end of substantial sessions — catches stale indexes and mixed context
 - `/om-vault-upgrade` imports content from an existing vault (older obsidian-mind or any Obsidian vault). Detects version, classifies notes, transforms frontmatter, fixes wikilinks, rebuilds indexes. Use `--dry-run` to preview.
 - `/om-project-archive` handles the active/ → archive/ move with index updates
+- `/om-historical-import`는 active workflow와 분리된 staging을 사용하며 완료 연도가 확인된 프로젝트만 archive에 발행한다.
 
 ## Subagents
 
@@ -137,7 +139,7 @@ Two prompts you invoke yourself from the `/` menu: `recall_topic`, `prior_art`. 
 
 **`reason` is the slow one.** The rest answer without inference; this one spawns a session, so it takes seconds to minutes. Reach for it when `search` or `recall` returned the notes but not the answer — it seeds itself from search, so there is no need to search first. It runs on your own CLI default model unless `reason.model` pins one, nothing about it is capped, and every call is logged with its cost, turns, model and wall time. Answers land in `.claude/om-reasoning/` marked `confidence: inferred` and are never auto-recorded as memories.
 
-**Debugging it:** call `health` first. Every failure in this layer presents identically as "no results" — a renamed memory folder, a moved launcher, an index registered to a different vault, a session with no identity — and `health` is what tells them apart. A caller reported as `ANONYMOUS` means the client never completed the roots handshake, so only `general`-scope memories are visible.
+**Debugging it:** call `health` first. Every failure in this layer presents identically as "no results" — a renamed memory folder, a moved launcher, an index registered to a different vault, a session with no identity — and `health` is what tells them apart. A caller reported as `ANONYMOUS` means the client never completed the roots handshake, so only `general`-scope memories are visible. If that client does not send `roots/list`, set `OM_CALLER` in its repository-local MCP configuration so project-scoped recall has a stable identity. ^om-caller-identity
 
 **Two guards worth knowing:** memories are never served as ordinary notes (they carry their own declared scope), and a memory that would reach nobody is refused rather than silently widened to `general`.
 

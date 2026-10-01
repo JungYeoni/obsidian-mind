@@ -61,6 +61,7 @@ import {
 	formatActiveHygiene,
 	parseMemoryRoot,
 	parseOpenLoopConfig,
+	parseTeamSharedRoots,
 	scanActiveHygiene,
 } from "./lib/active-hygiene.ts";
 
@@ -608,6 +609,7 @@ const hygieneLines = formatActiveHygiene(
 		parseOpenLoopConfig(manifestJson),
 		infraRootFilenames,
 		parseMemoryRoot(manifestJson),
+		parseTeamSharedRoots(manifestJson),
 	),
 );
 if (hygieneLines.length > 0) {

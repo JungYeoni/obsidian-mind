@@ -119,6 +119,7 @@ export type ActiveHygieneReport = {
 	readonly openLoops: readonly OpenLoop[];
 	readonly inboxPressure: InboxPressure | null;
 	readonly memoryInbox: MemoryInboxPressure | null;
+	readonly teamSharedLeaks: readonly TeamSharedLeak[];
 };
 
 // ---------------------------------------------------------------------------
@@ -318,9 +319,32 @@ export function walkMarkdown(root: string, relDir: string): string[] {
 	return out;
 }
 
+/**
+ * Only a project's own hub note carries project-level status. A sub-note
+ * inside a topic cluster (session log, submission, decision) can be
+ * "completed" on its own terms — this session is done, this submission went
+ * out — without the project itself being finished, and flagging those
+ * trains the reader to ignore the whole section. A hub note is either a
+ * loose file directly in active/ root (a single-note project) or the file
+ * named after its containing topic folder (work/active/<Topic>/<Topic>.md),
+ * per the cluster convention in CLAUDE.md. Anything deeper, or any other
+ * name inside a topic folder, is a sub-note and is never checked here.
+ */
+function isProjectHubPath(rel: string): boolean {
+	const sub = rel.slice(ACTIVE_REL.length + 1);
+	const parts = sub.split("/");
+	if (parts.length === 1) return true;
+	if (parts.length === 2) {
+		const [topic, filename] = parts as [string, string];
+		return filename.replace(/\.md$/i, "").toLowerCase() === topic.toLowerCase();
+	}
+	return false;
+}
+
 function findCompletedInActive(root: string): string[] {
 	const found: string[] = [];
 	for (const rel of walkMarkdown(root, ACTIVE_REL)) {
+		if (!isProjectHubPath(rel)) continue;
 		let content: string;
 		try {
 			content = readFileSync(join(root, rel), "utf-8");
@@ -588,6 +612,113 @@ function findMemoryInbox(root: string, relDir: string, nowMs: number): MemoryInb
 }
 
 // ---------------------------------------------------------------------------
+// Team-shared subtree boundary (DEC-008, teeq). A project folder mirrored
+// out via `git subtree push` to an external team repo must contain only
+// content meant for that audience — a session work-log or an om
+// `record_work` auto-capture landing at the folder root leaks to every
+// subtree consumer the moment it's written, and neither of those write
+// paths goes through this vault's own Write/Edit tools, so this can only
+// ever be a NUDGE caught at the next scan, never a live block. Config-driven
+// (`team_shared_roots` in vault-manifest.json) so a project opts in without
+// a code change, and so the whitelist lives beside the data it protects
+// instead of inside this file.
+// ---------------------------------------------------------------------------
+
+export type TeamSharedRoot = {
+	readonly prefix: string; // vault-relative folder, e.g. "work/active/teeq"
+	readonly allowDirs: ReadonlySet<string>; // subfolder names allowed directly under prefix
+	readonly allowRootFiles: ReadonlySet<string>; // filenames allowed directly at prefix root
+};
+
+export type TeamSharedLeak = {
+	readonly path: string; // vault-relative
+	readonly root: string; // the prefix it violates
+};
+
+/** No default roots — this is project-specific and opt-in only via the manifest. */
+export function parseTeamSharedRoots(manifestJson: string | null): readonly TeamSharedRoot[] {
+	if (manifestJson === null) return [];
+	try {
+		const raw = (JSON.parse(manifestJson) as Record<string, unknown>)["team_shared_roots"];
+		if (!Array.isArray(raw)) return [];
+		const out: TeamSharedRoot[] = [];
+		for (const entry of raw) {
+			if (typeof entry !== "object" || entry === null) continue;
+			const e = entry as Record<string, unknown>;
+			const prefix = e["prefix"];
+			const allowDirs = e["allow_dirs"];
+			const allowRootFiles = e["allow_root_files"];
+			if (
+				typeof prefix !== "string" ||
+				prefix.length === 0 ||
+				prefix.startsWith("/") ||
+				prefix.split("/").includes("..") ||
+				!Array.isArray(allowDirs) ||
+				!allowDirs.every((x): x is string => typeof x === "string") ||
+				!Array.isArray(allowRootFiles) ||
+				!allowRootFiles.every((x): x is string => typeof x === "string")
+			) {
+				continue; // malformed entry → skip it, not the whole config
+			}
+			out.push({
+				prefix,
+				allowDirs: new Set(allowDirs),
+				allowRootFiles: new Set(allowRootFiles),
+			});
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+/** Given a subtree-relative path (no leading slash), is it inside the whitelist? */
+function isTeamSharedAllowed(sub: string, cfg: TeamSharedRoot): boolean {
+	const slashIdx = sub.indexOf("/");
+	return slashIdx === -1
+		? cfg.allowRootFiles.has(sub)
+		: cfg.allowDirs.has(sub.slice(0, slashIdx));
+}
+
+function findTeamSharedLeaks(root: string, roots: readonly TeamSharedRoot[]): TeamSharedLeak[] {
+	const out: TeamSharedLeak[] = [];
+	for (const cfg of roots) {
+		for (const rel of walkMarkdown(root, cfg.prefix)) {
+			const sub = rel.slice(cfg.prefix.length + 1);
+			if (!isTeamSharedAllowed(sub, cfg)) out.push({ path: rel, root: cfg.prefix });
+		}
+	}
+	return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function formatTeamSharedLeakHint(leak: TeamSharedLeak): string {
+	return `🔒 \`${leak.path}\` sits directly under \`${leak.root}/\`, which is mirrored to a team-shared repo via \`git subtree push\`. If it isn't meant for the team (a session work-log, scratch, an om \`record_work\` auto-capture), move it to \`thinking/\`. If it belongs here, put it inside one of the allowed subfolders instead of the root.`;
+}
+
+/**
+ * Write-time version: does the just-written file land outside the whitelist
+ * of a configured team-shared root? Reuses the same allow-check as the scan
+ * so write-time and scan-time can never disagree.
+ */
+export function newTeamSharedLeakCandidate(
+	filePath: string,
+	vaultRoot: string,
+	roots: readonly TeamSharedRoot[],
+): TeamSharedLeak | null {
+	const normalized = filePath.replaceAll("\\", "/");
+	const rootFwd = vaultRoot.replaceAll("\\", "/");
+	for (const cfg of roots) {
+		const prefixDir = `${rootFwd}/${cfg.prefix}/`;
+		if (!normalized.startsWith(prefixDir)) continue;
+		const sub = normalized.slice(prefixDir.length);
+		if (!isTeamSharedAllowed(sub, cfg)) {
+			return { path: `${cfg.prefix}/${sub}`, root: cfg.prefix };
+		}
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
 // Write-time detectors — the same logic the scan uses, moved to the moment
 // of write so drift is caught at the keystroke instead of the next session
 // boundary. validate-write.ts calls these.
@@ -616,14 +747,14 @@ export function newNoteClusterCandidate(
 
 export function formatClusterHint(cluster: TopicCluster): string {
 	return [
-		`🗂️  This note joins ${cluster.files.length - 1} loose sibling(s) in active/ sharing "${cluster.token}": ${cluster.files.join(", ")}.`,
-		"Convention: once a workstream has >1 note it gets a folder (active/<Topic>/, `git mv`, mirror the folder in archive/ later).",
-		"Token overlap is BLIND — judge whether these genuinely share context before grouping; if they don't, say so and move on.",
+		`🗂️  이 노트는 active/에서 "${cluster.token}" 토큰을 공유하는 다른 노트 ${cluster.files.length - 1}개와 같은 주제일 수 있습니다: ${cluster.files.join(", ")}.`,
+		"규칙: 하나의 작업 흐름에 노트가 2개 이상이면 폴더로 묶습니다 (active/<Topic>/, `git mv`, 나중에 archive/에도 같은 폴더 구조 유지).",
+		"토큰 겹침은 문맥을 판단하지 못합니다. 실제로 같은 맥락인지 확인한 뒤 묶고, 아니라면 그대로 진행하세요.",
 	].join("\n");
 }
 
 export function formatMonolithHint(path: string, sizeBytes: number): string {
-	return `📐 \`${path}\` is now ${Math.round(sizeBytes / 1000)}KB — past the ${MONOLITH_BYTES / 1000}KB organization threshold. Do NOT trim the content; SPLIT it while you have the context: domain notes / event-log satellites / a cluster folder, moved verbatim, with a one-liner index left behind and inbound links retargeted. If a split genuinely doesn't fit yet, say why in the session instead of ignoring this.`;
+	return `📐 \`${path}\`이(가) 현재 ${Math.round(sizeBytes / 1000)}KB로 ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘었습니다. 내용을 줄이지 말고 맥락이 남아 있을 때 분리하세요: 도메인 노트 / 이벤트 로그 위성 노트 / 클러스터 폴더로 원문 그대로 옮기고, 기존 파일에는 한 줄짜리 색인을 남긴 뒤 들어오는 링크를 새 위치로 연결합니다. 지금 분리하기 어렵다면 경고를 무시하지 말고 이번 세션에 그 이유를 남기세요.`;
 }
 
 export function scanActiveHygiene(
@@ -632,6 +763,7 @@ export function scanActiveHygiene(
 	openLoopConfig: OpenLoopConfig = parseOpenLoopConfig(null),
 	infraRootFilenames: readonly string[] = [],
 	memoryRoot: string = MEMORY_ROOT_DEFAULT,
+	teamSharedRoots: readonly TeamSharedRoot[] = [],
 ): ActiveHygieneReport {
 	return {
 		completedInActive: findCompletedInActive(root),
@@ -640,6 +772,7 @@ export function scanActiveHygiene(
 		openLoops: findOpenLoops(root, nowMs, openLoopConfig),
 		inboxPressure: findInboxPressure(root, nowMs),
 		memoryInbox: findMemoryInbox(root, memoryRoot, nowMs),
+		teamSharedLeaks: findTeamSharedLeaks(root, teamSharedRoots),
 	};
 }
 
@@ -655,6 +788,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 		openLoops,
 		inboxPressure,
 		memoryInbox,
+		teamSharedLeaks,
 	} = report;
 	if (
 		completedInActive.length === 0 &&
@@ -662,7 +796,8 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 		oversizedNotes.length === 0 &&
 		openLoops.length === 0 &&
 		inboxPressure === null &&
-		memoryInbox === null
+		memoryInbox === null &&
+		teamSharedLeaks.length === 0
 	) {
 		return [];
 	}
@@ -670,7 +805,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 
 	if (completedInActive.length > 0) {
 		lines.push(
-			`⚠️  ${completedInActive.length} note(s) marked done but still in active/ — archive to archive/YYYY/ (try /om-project-archive):`,
+			`⚠️  완료 상태인데 아직 active/에 남아 있는 노트가 ${completedInActive.length}개 있습니다. archive/YYYY/로 옮기세요 (/om-project-archive 사용 가능):`,
 		);
 		for (const p of completedInActive) lines.push(`   - ${p}`);
 	}
@@ -678,7 +813,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (ungroupedClusters.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			"⚠️  Loose active/ notes that look like one topic — consider a folder (active/<Topic>/):",
+			"⚠️  active/의 여러 노트가 하나의 주제로 보입니다. 폴더로 묶는 것을 검토하세요 (active/<Topic>/):",
 		);
 		for (const { token, files } of ungroupedClusters) {
 			lines.push(`   - "${token}": ${files.join(", ")}`);
@@ -688,7 +823,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (oversizedNotes.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  ${oversizedNotes.length} note(s) past the ${MONOLITH_BYTES / 1000}KB organization threshold — do NOT trim content; SPLIT (domain notes / event-log satellites / a cluster folder, verbatim, one-liner index behind):`,
+			`⚠️  ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘은 노트가 ${oversizedNotes.length}개 있습니다. 내용을 줄이지 말고 분리하세요 (도메인 노트 / 이벤트 로그 위성 노트 / 클러스터 폴더로 원문 그대로 이동하고 기존 파일에는 한 줄짜리 색인 유지):`,
 		);
 		for (const { path, sizeKb } of oversizedNotes) {
 			lines.push(`   - ${path} (${sizeKb}KB)`);
@@ -698,7 +833,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (openLoops.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  ${openLoops.length} note(s) with open follow-ups untouched ${OPEN_LOOP_DAYS}+ days — close, chase, or consciously park (paths + counts only by design):`,
+			`⚠️  미완료 후속 작업이 ${OPEN_LOOP_DAYS}일 넘게 갱신되지 않은 노트가 ${openLoops.length}개 있습니다. 완료하거나, 후속 조치하거나, 의도적으로 보류하세요 (경로와 개수만 표시):`,
 		);
 		for (const { path, ageDays, openItems } of openLoops) {
 			lines.push(`   - ${path} (${ageDays}d, ${openItems} open item(s))`);
@@ -708,7 +843,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (inboxPressure !== null) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  ${inboxPressure.count} raw export(s) sitting in work/meetings/ for ${INBOX_PRESSURE_DAYS}+ days (oldest ${inboxPressure.oldestDays}d) — run /om-intake to drain the inbox.`,
+			`⚠️  work/meetings/에 ${INBOX_PRESSURE_DAYS}일 넘게 남아 있는 원본 내보내기가 ${inboxPressure.count}개 있습니다 (가장 오래된 항목 ${inboxPressure.oldestDays}일). /om-intake로 수신함을 처리하세요.`,
 		);
 	}
 
@@ -718,16 +853,29 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (memoryInbox !== null) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  ${memoryInbox.count} cross-repo memory capture(s) awaiting review (oldest ${memoryInbox.oldestDays}d). Promote a durable one by COPYING it into the right brain/ note and adding \`promoted: "brain/Note#^om-a1b2c3"\` to the capture's frontmatter, pointing at the block you copied — the entry stays, because recall reaches brain/ only THROUGH a capture, so deleting it takes the lesson away from every repo that cannot read brain/ at all. The ANCHOR is what lets recall serve the corrected text; a bare \`promoted: <note>\` clears this count but serves nothing.`,
+			`⚠️  검토를 기다리는 저장소 간 메모리 캡처가 ${memoryInbox.count}개 있습니다 (가장 오래된 항목 ${memoryInbox.oldestDays}일). 오래 남길 내용은 적절한 brain/ 노트로 복사하고, 캡처 frontmatter에 복사한 블록을 가리키는 \`promoted: "brain/Note#^om-a1b2c3"\`를 추가하세요. recall은 캡처를 통해서만 brain/ 내용에 도달하므로 원본 캡처는 삭제하지 않습니다. 앵커가 있어야 수정된 내용을 recall이 제공할 수 있으며, \`promoted: <note>\`처럼 노트만 지정하면 대기 개수에서는 빠지지만 내용은 제공되지 않습니다.`,
 		);
 		// Evidence for the sentence above, from this vault rather than in the
 		// abstract. Told once the flag is already firing — it never raises one of
 		// its own, because a bare marker is a legitimate promotion. (#183)
 		if (memoryInbox.namedOnly > 0) {
 			lines.push(
-				`   ${memoryInbox.namedOnly} already-promoted capture(s) here carry a bare marker, so recall serves none of them. Re-point one by adding the anchor of the block you copied.`,
+				`   이미 승격된 캡처 ${memoryInbox.namedOnly}개는 앵커 없는 표식만 있어 recall이 내용을 제공하지 못합니다. 복사한 블록의 앵커를 추가해 다시 연결하세요.`,
 			);
 		}
+	}
+
+	if (teamSharedLeaks.length > 0) {
+		if (lines.length > 0) lines.push("");
+		lines.push(
+			`🔒 팀 공유 subtree 루트의 허용 목록 밖에 있는 파일이 ${teamSharedLeaks.length}개 있습니다. 다음 \`git subtree push\` 때 그대로 팀 저장소에 올라갑니다:`,
+		);
+		for (const { path, root } of teamSharedLeaks) {
+			lines.push(`   - ${path} (root: ${root}/)`);
+		}
+		lines.push(
+			"   Move anything here that isn't meant for the team (session work-logs, scratch, om record_work captures) to `thinking/`.",
+		);
 	}
 
 	return lines;

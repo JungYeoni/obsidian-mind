@@ -27,8 +27,11 @@ import {
 	MONOLITH_BYTES,
 	formatClusterHint,
 	formatMonolithHint,
+	formatTeamSharedLeakHint,
 	isMonolithExempt,
 	newNoteClusterCandidate,
+	newTeamSharedLeakCandidate,
+	parseTeamSharedRoots,
 } from "./lib/active-hygiene.ts";
 import {
 	shouldRefreshForPath,
@@ -216,6 +219,33 @@ try {
 	}
 } catch {
 	debug("validate: cluster check failed — skipped");
+}
+try {
+	let manifestJson: string | null = null;
+	try {
+		manifestJson = readFileSync(join(vaultRoot, "vault-manifest.json"), {
+			encoding: "utf-8",
+		});
+	} catch {
+		/* missing manifest → no configured team-shared roots */
+	}
+	const leak = newTeamSharedLeakCandidate(
+		filePath,
+		vaultRoot,
+		parseTeamSharedRoots(manifestJson),
+	);
+	if (leak !== null) {
+		blocks.push(formatTeamSharedLeakHint(leak));
+		policyResults.push({
+			policy_id: "team-shared-leak",
+			path: relPath,
+			classification: "outside-whitelist",
+			suggested_target: "thinking/",
+			action: "flag",
+		});
+	}
+} catch {
+	debug("validate: team-shared leak check failed — skipped");
 }
 
 if (blocks.length > 0) {

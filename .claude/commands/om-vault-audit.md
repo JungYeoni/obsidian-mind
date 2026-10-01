@@ -26,11 +26,13 @@ Verify the vault matches the expected layout:
 - `Home.md` exists at vault root
 - `bases/` contains all `.base` files (none scattered elsewhere)
 - `work/active/` contains only notes with `status: active`
-- `work/archive/2025/` and `work/archive/2026/` contain only `status: completed` notes
+- `work/archive/2025/` and `work/archive/2026/` contain completed work notes; Decision Records keep their decision lifecycle status (`accepted`, `superseded`, `rejected`, etc.)
+- Historical Project Hubs live at `work/archive/<completion-year>/<identity>/<identity>.md`; their `completed` value matches the folder year and they use `Reuse Notes`, never `Handoff`
 - `work/incidents/` contains only notes tagged `incident`
 - `work/1-1/` contains only 1:1 meeting notes
 - `org/people/` contains only notes tagged `person`
 - `org/teams/` contains only notes tagged `team`
+- `learning/` contains only Learning Debt, Knowledge, and its index
 - `templates/` contains only template files (with `{{placeholders}}`)
 - `thinking/` is clean (no leftover drafts that should have been promoted)
 - Nothing unexpected at vault root (allowed: `Home.md`, `CLAUDE.md`, `vault-manifest.json`, `CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, `LICENSE`, `.gitignore` — no user notes)
@@ -49,9 +51,14 @@ Read and verify each index file:
 
 For each note type, verify required properties:
 
-**Work notes** (`work/active/`, `work/archive/`):
-- Required: `date`, `quarter`, `description`, `status`, `tags: [work-note]`
+**Work notes** (`work/active/`, `work/archive/`, excluding Decision Records):
+- Required: `date`, `description`, `status`, `tags: [work-note]`
 - Optional: `project`, `team`
+
+**Decision Records** (`work/active/`, `work/archive/`):
+- Required: `date`, `description`, decision lifecycle `status`, `tags: [decision]`
+- Valid lifecycle examples: `proposed`, `accepted`, `superseded`, `rejected`, `deprecated`
+- Archive placement records project lifecycle and does not force `status: completed`
 
 **Incident notes** (`work/incidents/`):
 - Required: `date`, `quarter`, `description`, `tags: [work-note, incident]`
@@ -67,6 +74,19 @@ For each note type, verify required properties:
 **Brain notes** (`brain/`):
 - Required: `description`, `tags: [brain]`
 
+**Learning Debt** (`learning/`):
+- Required: `date`, `description`, `type: learning-debt`, `status`, `projects`, `confidence`, `tags: [learning, learning-debt]`
+
+**Knowledge** (`learning/`):
+- Required: `date`, `description`, `type: knowledge`, `status`, `confidence`, `tags: [learning, knowledge]`
+- `status: verified` requires evidence from official documentation, code inspection, or an experiment
+
+**Historical Project Hubs** (`work/archive/<year>/<identity>/<identity>.md`):
+- Required: `date`, `description`, `type: historical-project`, `status: completed`, `lifecycle: archived`, `project`, `display_name`, `completed`, `imported`, `reconstruction_status`, `source_manifest`
+- Must not use a whole-note `confidence`; attach source and confidence to individual claims
+- Must contain `## Reuse Notes` and must not contain `## Handoff`
+- Do not publish when the completion year is unknown
+
 **1:1 notes** (`work/1-1/`):
 - Required: `date`, `quarter`, `description`, `tags: [work-note]`
 
@@ -77,8 +97,9 @@ Scan all notes for duplicate entries in the `tags` array (e.g., `tags: [person, 
 ### 5. Check Status/Folder Alignment
 
 - Notes in `work/active/` must have `status: active`
-- Notes in `work/archive/` must have `status: completed`
-- No `status: active` notes in archive, no `status: completed` notes in active
+- Non-decision work notes in `work/archive/` must have `status: completed`
+- Decision Records keep their decision lifecycle status in either active or archive folders
+- No `status: active` notes in archive, no `status: completed` non-decision work notes in active
 
 ### 6. Check Bases
 
@@ -95,6 +116,7 @@ For each `.base` file in `bases/`:
 - Are there people notes not linked from `org/People & Context.md`?
 - Are there notes without any inbound links at all? (Use `obsidian orphans` if available, or grep for `[[NoteName]]` references)
 - Are there thinking notes that should have been promoted or deleted?
+- Are Learning Debt and Knowledge notes linked from `learning/Index.md`, their source projects, or each other?
 
 ### 8. Check Links
 

@@ -1,0 +1,88 @@
+filters:
+  and:
+    - file.hasTag("learning")
+    - file.ext == "md"
+    - '!file.inFolder("templates")'
+properties:
+  file.name:
+    displayName: Note
+  type:
+    displayName: Type
+  status:
+    displayName: Status
+  projects:
+    displayName: Projects
+  technologies:
+    displayName: Technologies
+  confidence:
+    displayName: Confidence
+  description:
+    displayName: Summary
+  file.mtime:
+    displayName: Last Modified
+views:
+  - type: table
+    name: Open Debt
+    filters:
+      and:
+        - type == "learning-debt"
+        - status != "resolved"
+    order:
+      - file.name
+      - status
+      - projects
+      - technologies
+      - description
+  - type: table
+    name: Studying
+    filters:
+      and:
+        - type == "learning-debt"
+        - status == "studying"
+    order:
+      - file.name
+      - projects
+      - technologies
+      - file.mtime
+  - type: table
+    name: Resolved Debt
+    filters:
+      and:
+        - type == "learning-debt"
+        - status == "resolved"
+    order:
+      - file.name
+      - projects
+      - technologies
+      - file.mtime
+  - type: table
+    name: Verified Knowledge
+    filters:
+      and:
+        - type == "knowledge"
+        - status == "verified"
+    order:
+      - file.name
+      - technologies
+      - confidence
+      - description
+  - type: table
+    name: By Project
+    groupBy:
+      property: projects
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - status
+      - technologies
+  - type: table
+    name: By Technology
+    groupBy:
+      property: technologies
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - status
+      - projects

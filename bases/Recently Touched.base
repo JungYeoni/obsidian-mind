@@ -3,6 +3,7 @@ filters:
     - file.ext == "md"
     - '!file.inFolder("templates")'
     - '!file.inFolder("thinking")'
+    - '!file.inFolder("imports")'
 formulas:
   touched: file.mtime.format("YYYY-MM-DD HH:mm")
   days_ago: (now() - file.mtime).days.round(0)

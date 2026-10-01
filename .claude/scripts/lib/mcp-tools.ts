@@ -139,7 +139,7 @@ export const TOOLS: readonly ToolDef[] = [
 				folder: {
 					type: "string",
 					description:
-						"Vault-relative destination, e.g. 'projects/pocket/notes'. Omit to file it under the calling repo's project automatically. Search the vault first if unsure where similar notes live.",
+						"Vault-relative destination, e.g. 'work/active/pocket/notes'. Omit to file it under the calling repo's active project automatically. Search the vault first if unsure where similar notes live.",
 				},
 				kind: {
 					type: "string",
@@ -271,4 +271,3 @@ export const TOOLS: readonly ToolDef[] = [
 		annotations: { title: "Check vault wiring", ...READ_ONLY },
 	},
 ];
-

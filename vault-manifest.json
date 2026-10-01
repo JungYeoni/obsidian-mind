@@ -16,10 +16,34 @@
   "eager_layer_budget_bytes": 80000,
   "listing_collapse_threshold": 12,
   "memory_root": "memories",
+  "team_shared_roots": [
+    {
+      "prefix": "work/active/teeq",
+      "allow_dirs": [
+        "decisions",
+        "dependencies",
+        "hypotheses",
+        "meetings",
+        "product",
+        "questions",
+        "research",
+        "sources",
+        "submissions",
+        "templates",
+        "artifacts",
+        "experiments"
+      ],
+      "allow_root_files": [
+        "teeq.md",
+        "TeeQ Meeting Processing Rule.md",
+        "AGENTS.md"
+      ]
+    }
+  ],
   "mcp_exposed_roots": [],
   "mcp_never_expose": [],
   "mcp_inbox": "inbox",
-  "qmd_context": "Engineer's work vault built on obsidian-mind. Active projects and archive, 1:1 notes, incidents, brag log with quarterly evidence, competency map, people and teams, decisions and patterns in brain/, reference docs and runbooks. Multi-agent (Claude Code, Codex, Gemini) with lifecycle hooks and QMD semantic search. Ground for 'what did I ship?' reviews, project status, and personal knowledge management.",
+  "qmd_context": "Personal engineering context vault shared by Codex and Claude Code across agentic coding projects. Project Hubs under work/ preserve current state, next actions, design decisions, debugging history, verification, and handoffs. Learning Debt captures technologies and architecture used without sufficient understanding; verified study is promoted into reusable Knowledge linked back to source projects. brain/ holds cross-project decisions, patterns, gotchas, and operating context. memories/ stores scoped durable lessons for retrieval from external repositories through the om MCP server. Prefer project-specific truth over duplicated summaries and verified sources over inference.",
   "infrastructure": [
     "CLAUDE.md",
     "AGENTS.md",
@@ -47,6 +71,7 @@
     "perf/competencies/README.md",
     "thinking/README.md",
     "work/meetings/README.md",
+    "work/_dumps/README.md",
     ".shardmind/**",
     ".shardmindignore"
   ],
@@ -72,6 +97,7 @@
     "perf/h*-*/",
     "perf/competencies/*.md",
     "brain/*.md",
+    "learning/",
     "reference/",
     "memories/"
   ],
@@ -227,8 +253,18 @@
     ],
     "work-note": [
       "date",
+      "status"
+    ],
+    "learning-debt": [
+      "date",
       "status",
-      "quarter"
+      "projects",
+      "confidence"
+    ],
+    "knowledge": [
+      "date",
+      "status",
+      "confidence"
     ],
     "incident": [
       "date",

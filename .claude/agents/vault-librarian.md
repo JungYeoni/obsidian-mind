@@ -22,7 +22,7 @@ You are the vault librarian for an obsidian-mind vault. Run a full health check 
    - `tags` (non-empty)
    - `date`
    - `description` (~150 chars)
-   - Type-specific required fields (incidents need `ticket`, `severity`, `role`; work notes in recent quarters need `quarter`)
+   - Type-specific required fields (incidents need `ticket`, `severity`, `role`, and `quarter`; 1:1 notes need `quarter`; ordinary work notes do not)
 
 4. **Stale Active Notes**: Check `work/active/` for notes with `status: completed` or not modified in 60+ days. These should be archived to `work/archive/YYYY/`.
 

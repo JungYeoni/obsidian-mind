@@ -42,6 +42,7 @@ Defined in `.claude/commands/`. Claude Code auto-surfaces every command with its
 | `perf/evidence/` | PR deep scans, data extracts for reviews | Named `<Person> PRs - <Period>.md` |
 | `perf/<cycle>/` | Review cycle briefs + artifacts | Review briefs (private, manager, peer) |
 | `brain/` | Claude's operational knowledge | `Memories.md`, `Key Decisions.md`, `Patterns.md`, `Gotchas.md`, `Skills.md`, `North Star.md` |
+| `learning/` | Learning Debt and verified reusable Knowledge | `Index.md`, viewed through `Learning Dashboard.base` |
 | `memories/YYYY/MM/` | **Cross-repo agent memory** -- durable lessons recorded over MCP by sessions working in *other* repositories. Time is the only thing in the path; reach is declared in frontmatter | Browse via `bases/Memories.base`; never edit by hand |
 | `org/` | Organizational knowledge index | `People & Context.md` (MOC) |
 | `org/people/` | Atomic person notes | One note per person |
@@ -120,7 +121,7 @@ Use `thinking/` for drafts, reasoning, and analysis before writing final notes. 
 
 ### Creating Notes
 
-1. **Always use YAML frontmatter** with at minimum `date`, `description` (~150 chars), `tags`, and type-specific fields. Work notes and incidents also need `quarter` (e.g., `Q1-2026`). Incidents need `ticket`, `severity`, `role`.
+1. **Always use YAML frontmatter** with at minimum `date`, `description` (~150 chars), `tags`, and type-specific fields. Incidents and 1:1 notes need `quarter` (e.g., `Q1-2026`); ordinary work notes do not. Incidents also need `ticket`, `severity`, `role`.
 2. **Use templates** from `templates/`. Fill `{{placeholders}}` with real values.
 2b. **Write fully, organize structurally — the vault tidies itself.** Size is a STRUCTURE signal, never a brevity signal: when a note crosses the ~25KB organization threshold (bytes, not lines — giant single-line entries hide in low line counts), the PostToolUse hook flags it at write time and the hygiene scan flags it at session boundaries. The response is always a SPLIT (domain notes, event-log satellites, or a cluster folder — content moved verbatim, one-liner index left behind, inbound links retargeted), never trimming content. The same hook flags write-time topic clusters — token overlap is blind, so judge genuine shared context before grouping. `/om-tidy` is the acting half. Exempt: `*Archive*` notes (bulk is their job).
 3. **Place files correctly**:
@@ -134,6 +135,8 @@ Use `thinking/` for drafts, reasoning, and analysis before writing final notes. 
    - People -- `org/people/`
    - Teams -- `org/teams/`
    - Claude operational context -- `brain/`
+   - Learning Debt and reusable Knowledge -- `learning/`
+   - Historical import staging -- `imports/historical/` (excluded from ordinary QMD search and om MCP; read only during the explicit import workflow)
    - Codebase knowledge -- `reference/`
    - Drafts -- `thinking/`
    - Vault root: `Home.md`, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `vault-manifest.json`, `CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, `LICENSE`, `.gitignore`. No user notes at root.
@@ -153,6 +156,9 @@ Use `thinking/` for drafts, reasoning, and analysis before writing final notes. 
 | Team note | `org/teams/` | Team name | Members, Scope, Interactions |
 | Competency | `perf/competencies/` | Competency name | Definition, level criteria, Evidence (via backlinks) |
 | Brain note | `brain/` | Topic name | Topic-specific content |
+| Learning Debt | `learning/` | `Learning Debt - <Topic>` | Trigger, unknowns, risk, questions, evidence, project links, resolution |
+| Knowledge | `learning/` | `Knowledge - <Topic>` | Claim, mental model, use, failure modes, example, verification, applications |
+| Historical Project | `work/archive/<year>/<project>/` | machine identity for the Hub; descriptive names for promoted notes | Outcome, historical scope, reconstructed final state, decisions, problem solving, sources, reuse notes |
 | Domain note | Beside its family index | `<Index> - <Domain>` (e.g. `Gotchas - Tooling`) | Substance lives here; the family index keeps a one-liner per entry. Born from monolith splits — never re-inline into the index |
 | Event-log satellite | Beside its core note | `<Core> — <Event> Log` or dated title | Chronological bulk offloaded from a person/project core note; the core links it. Dated entries, verbatim moves |
 | Archive note | Beside its live note | `<Live Name> Archive[ — <window>]` | Bulk by design, hygiene-exempt (name contains "Archive"). Verbatim zero-loss moves; live note keeps a one-liner index + link |
@@ -189,6 +195,9 @@ Link syntax:
 - **Memories -> Source**: every memory links to where it was learned
 - **Index -> Everything**: `work/Index.md` links to all work notes
 - **North Star -> Projects**: active focus areas link to project work notes
+- **Learning Debt -> Project + Knowledge**: every debt links to its source project and, when resolved, the verified Knowledge note
+- **Knowledge -> Debt + Projects**: reusable knowledge links to its source debt and where it was applied
+- **Historical Project -> Import Manifest**: every reconstructed project links to its excluded staging manifest; individual claims carry their own source and confidence
 
 ### Maintaining Indexes
 
@@ -197,6 +206,7 @@ Update these when creating or archiving notes:
 - **`work/Index.md`** -- add to Active Projects or Recent Notes, move completed to Archive
 - **`brain/Memories.md`** -- index of memory topics. Add new memories to the relevant topic note, not here.
 - **`brain/Skills.md`** -- register vault-specific workflows and slash commands
+- **`learning/Index.md`** -- entry point for Learning Debt and verified Knowledge
 - **`org/People & Context.md`** -- update when people, teams, or org structure changes
 - **`perf/Brag Doc.md`** -- log wins with links to evidence, add new quarters as needed
 
@@ -252,6 +262,10 @@ Beyond tags, use these frontmatter properties to enable search and Bases views:
 - `status: active` -- find active projects
 - `quarter: Q1-2026` -- find all work for a quarter (used by Work Dashboard Base)
 - `ticket: TICKET-123` -- find incident by ticket number
+- `type: learning-debt` or `type: knowledge` -- distinguish learning lifecycle notes
+- `projects: [project-a]` -- link learning to source projects
+- `technologies: [typescript]` -- group learning by technology
+- `confidence: verified|inferred|unverified` -- state the evidence level honestly
 - `severity: high` -- incident severity
 - `role: incident-lead` -- your role in an incident
 

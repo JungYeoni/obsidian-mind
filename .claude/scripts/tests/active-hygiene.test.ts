@@ -131,20 +131,40 @@ describe("countOpenLoops", () => {
 });
 
 describe("scanActiveHygiene — detectors", () => {
-	test("flags completed notes in active/ (recursively), ignores active ones", () => {
+	test("flags a completed loose project note, ignores an active one", () => {
 		writeAged(
 			"work/active/Live Project.md",
 			"---\nstatus: active\n---\n# live\n",
 			1,
 		);
 		writeAged(
-			"work/active/Grouped Topic/Done Sub.md",
+			"work/active/Done Project.md",
 			"---\nstatus: completed\n---\n# done\n",
 			1,
 		);
 		const report = scanActiveHygiene(ROOT, NOW, DEFAULTS);
+		assert.deepEqual(report.completedInActive, ["work/active/Done Project.md"]);
+	});
+
+	test("flags a completed cluster HUB note, ignores a completed sub-note", () => {
+		// Hub: filename matches its containing topic folder — project-level status.
+		writeAged(
+			"work/active/Grouped Topic/Grouped Topic.md",
+			"---\nstatus: completed\n---\n# hub\n",
+			1,
+		);
+		// Sub-note: a session log or submission can be "completed" on its own
+		// terms without the project itself being done — must not be flagged.
+		writeAged(
+			"work/active/Grouped Topic/2026-01-01 Session Log.md",
+			"---\nstatus: completed\n---\n# session done\n",
+			1,
+		);
+		const report = scanActiveHygiene(ROOT, NOW, DEFAULTS);
+		// Cumulative with the fixture from the previous test (shared ROOT).
 		assert.deepEqual(report.completedInActive, [
-			"work/active/Grouped Topic/Done Sub.md",
+			"work/active/Done Project.md",
+			"work/active/Grouped Topic/Grouped Topic.md",
 		]);
 	});
 
@@ -363,7 +383,7 @@ describe("scanActiveHygiene — detectors", () => {
 			assert.equal(inbox?.namedOnly, 1, "the bare marker counts, the anchored one does not");
 
 			const text = formatActiveHygiene(scanActiveHygiene(solo, NOW, DEFAULTS)).join("\n");
-			assert.match(text, /1 already-promoted capture\(s\) here carry a bare marker/);
+			assert.match(text, /이미 승격된 캡처 1개는 앵커 없는 표식/);
 		} finally {
 			rmTemp(solo);
 		}
@@ -423,14 +443,15 @@ describe("scanActiveHygiene — detectors", () => {
 			openLoops: [],
 			inboxPressure: null,
 			memoryInbox: { count: 4, oldestDays: 2, namedOnly: 0 },
+			teamSharedLeaks: [],
 		});
 		const text = lines.join("\n");
-		assert.match(text, /COPYING it/);
+		assert.match(text, /brain\/ 노트로 복사/);
 		// The ANCHORED form is what the prompt must teach: a bare marker clears
 		// this very count while serving nothing, so a warning that showed only
 		// the bare form would be steering the reader to the useless one.
 		assert.match(text, /promoted: "brain\/Note#\^om-a1b2c3"/);
-		assert.match(text, /a bare `promoted: <note>` clears this count but serves nothing/);
+		assert.match(text, /노트만 지정하면 대기 개수에서는 빠지지만 내용은 제공되지 않습니다/);
 		assert.doesNotMatch(text, /om-intake/);
 	});
 
@@ -475,10 +496,10 @@ describe("write-time detectors", () => {
 			token: "payments",
 			files: ["Payments A.md", "Payments B.md"],
 		});
-		assert.match(hint, /Token overlap is BLIND/);
+		assert.match(hint, /토큰 겹침은 문맥을 판단하지 못합니다/);
 		assert.match(hint, /active\/<Topic>\//);
 		const mono = formatMonolithHint("work/Fat.md", 42_000);
-		assert.match(mono, /Do NOT trim/);
+		assert.match(mono, /내용을 줄이지 말고/);
 		assert.match(mono, /42KB/);
 	});
 
@@ -491,7 +512,7 @@ describe("write-time detectors", () => {
 describe("walkMarkdown", () => {
 	test("recurses into subfolders and tolerates missing dirs", () => {
 		const files = walkMarkdown(ROOT, "work/active");
-		assert.ok(files.includes("work/active/Grouped Topic/Done Sub.md"));
+		assert.ok(files.includes("work/active/Grouped Topic/Grouped Topic.md"));
 		assert.deepEqual(walkMarkdown(ROOT, "no/such/dir"), []);
 	});
 });
@@ -505,11 +526,12 @@ describe("formatActiveHygiene", () => {
 			openLoops: [{ path: "work/1-1/A 2026-01-01.md", ageDays: 20, openItems: 2 }],
 			inboxPressure: null,
 			memoryInbox: null,
+			teamSharedLeaks: [],
 		});
 		const text = lines.join("\n");
-		assert.match(text, /marked done but still in active\//);
-		assert.match(text, /SPLIT/);
-		assert.match(text, new RegExp(`${OPEN_LOOP_DAYS}\\+ days`));
+		assert.match(text, /완료 상태인데 아직 active\//);
+		assert.match(text, /내용을 줄이지 말고 분리/);
+		assert.match(text, new RegExp(`${OPEN_LOOP_DAYS}일 넘게`));
 		assert.doesNotMatch(text, /om-intake/); // silent segment omitted
 	});
 });
