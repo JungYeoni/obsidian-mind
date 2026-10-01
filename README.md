@@ -18,6 +18,9 @@
 
 > **An Obsidian vault that gives AI coding agents persistent memory.** Built for Claude Code, with working hooks for Codex CLI and Gemini CLI. Start a session, talk about your day, and the agent handles the rest — notes, links, indexes, performance tracking. Every conversation builds on the last.
 
+> [!NOTE]
+> This is [JungYeoni](https://github.com/JungYeoni)'s personal fork of [breferrari/obsidian-mind](https://github.com/breferrari/obsidian-mind), customized for their own Claude Code + Codex CLI workflow. On top of upstream it adds the `om-historical-import` workflow, Learning Debt/Knowledge templates, and extra vault-hygiene detectors (team-shared subtree boundary leak detection, a hub-only completed-status check). See [`CHANGELOG.md`](CHANGELOG.md) for the fork-specific entries.
+
 ---
 
 ## 🔴 The Problem

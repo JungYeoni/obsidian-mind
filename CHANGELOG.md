@@ -1,5 +1,17 @@
 # Changelog
 
+## JungYeoni's fork — unreleased
+
+Personal customizations on top of upstream, not part of the official obsidian-mind release line. See `brain/Key Decisions.md` in the vault for the full reasoning behind each.
+
+### Added
+- `om-historical-import` workflow for reconstructing completed pre-Claude-Code projects into `work/archive/<year>/<identity>/`
+- Learning Debt / Knowledge templates and a Learning Dashboard base
+- `team_shared_roots` detector (`vault-manifest.json`-configured): flags files written outside a team-shared subtree's whitelist, both at write time (`validate-write.ts`) and via the periodic `SessionStart`/`Stop` scan — catches leaks from `git subtree push` targets, including ones written by the `om` MCP server from another repo (which the write-time hook can't see)
+
+### Fixed
+- `completed-not-archived` check now only looks at a project's hub note, not every sub-note inside it — a session-log or submission note marked `status: completed` no longer makes the whole project look done
+
 ## v8.4.0 — 2026-09-02
 
 ### Fixed

@@ -21,6 +21,9 @@
 
 > **Claude Code가 모든 것을 기억하게 해주는 Obsidian 볼트.** 세션을 시작하고 하루에 대해 이야기하면, Claude가 나머지를 처리합니다 — 노트, 링크, 인덱스, 성과 추적까지. 모든 대화가 이전 대화 위에 쌓입니다.
 
+> [!NOTE]
+> 이 repo는 [JungYeoni](https://github.com/JungYeoni)가 [breferrari/obsidian-mind](https://github.com/breferrari/obsidian-mind)를 fork해서 개인 Claude Code + Codex CLI 워크플로우에 맞게 커스터마이징한 버전입니다. 원본 위에 `om-historical-import` 워크플로우, Learning Debt/Knowledge 템플릿, 추가 vault-hygiene 감지 로직(team-shared subtree 경계 leak 감지, 허브 노트 전용 완료 상태 체크)을 더했습니다. fork에서만 추가된 항목은 [`CHANGELOG.md`](CHANGELOG.md)에서 확인할 수 있습니다.
+
 ---
 
 ## 🔴 문제
