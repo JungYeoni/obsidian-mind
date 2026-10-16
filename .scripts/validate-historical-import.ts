@@ -11,7 +11,8 @@ if (!identity || !/^[\w.-]+$/.test(identity)) {
 	process.exit(2);
 }
 
-const roots = [join("imports", "historical", identity), join("work", "archive")];
+const stagingRoot = join("imports", "historical", identity);
+const roots = [stagingRoot, join("work", "archive")];
 const files: string[] = [];
 for (const root of roots) walk(root, files);
 
@@ -26,8 +27,8 @@ for (const file of files) {
 	}
 }
 
-if (!existsSync(roots[0])) {
-	process.stderr.write(`staging project not found: ${roots[0]}\n`);
+if (!existsSync(stagingRoot)) {
+	process.stderr.write(`staging project not found: ${stagingRoot}\n`);
 	process.exit(2);
 }
 

@@ -35,6 +35,7 @@ export function validateHistoricalDocument(relPath: string, content: string): st
 
 	if (staging) {
 		const [, identity, tail] = staging;
+		if (!identity || !tail) return warnings;
 		if (tail === "manifest.md") {
 			requireFields(fm, ["date", "description", "type", "project", "display_name", "status", "imported"], warnings);
 			if (fm.type !== "historical-import") warnings.push("manifest type은 historical-import여야 한다");

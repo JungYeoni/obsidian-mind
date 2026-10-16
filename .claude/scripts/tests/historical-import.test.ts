@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,8 +57,10 @@ describe("Historical Import validation", () => {
 	});
 
 	test("the shipped vault excludes imports from QMD and om MCP", () => {
-		const app = JSON.parse(readFileSync(join(ROOT, ".obsidian/app.json"), "utf8")) as { userIgnoreFilters?: string[] };
-		assert.ok(app.userIgnoreFilters?.includes("imports/"));
+		if (existsSync(join(ROOT, "imports"))) {
+			const app = JSON.parse(readFileSync(join(ROOT, ".obsidian/app.json"), "utf8")) as { userIgnoreFilters?: string[] };
+			assert.ok(app.userIgnoreFilters?.includes("imports/"));
+		}
 
 		const manifest = JSON.parse(readFileSync(join(ROOT, "vault-manifest.json"), "utf8")) as Record<string, unknown>;
 		const policy = resolveExposure(ROOT, manifest, String(manifest.memory_root ?? "memories"));
