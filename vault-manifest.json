@@ -36,7 +36,8 @@
       "allow_root_files": [
         "teeq.md",
         "TeeQ Meeting Processing Rule.md",
-        "AGENTS.md"
+        "AGENTS.md",
+        "README.md"
       ]
     }
   ],
@@ -98,6 +99,7 @@
     "perf/competencies/*.md",
     "brain/*.md",
     "learning/",
+    "school/",
     "reference/",
     "memories/"
   ],

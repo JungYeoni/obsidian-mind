@@ -192,7 +192,7 @@ try {
 	const size = statSync(filePath).size;
 	if (
 		size >= MONOLITH_BYTES &&
-		!isMonolithExempt(basename(filePathFwd))
+		!isMonolithExempt(basename(filePathFwd), content)
 	) {
 		blocks.push(formatMonolithHint(relPath, size));
 		policyResults.push({

@@ -187,14 +187,18 @@ describe("scanActiveHygiene — detectors", () => {
 		}
 	});
 
-	test("flags oversized notes vault-wide, exempts Archive names and skip dirs", () => {
+	test("flags oversized working notes, exempts preserved documents and skip dirs", () => {
 		writeAged("work/Fat Log.md", "x".repeat(MONOLITH_BYTES + 1000), 1);
 		writeAged("work/Fat Log Archive.md", "x".repeat(60_000), 1);
+		writeAged("work/Source.md", `---\ntype: source\n---\n${"x".repeat(60_000)}`, 1);
+		writeAged("work/Submission.md", `---\ntype: submission\n---\n${"x".repeat(60_000)}`, 1);
+		writeAged("work/Preserved.md", `---\nsize_policy: preserve\n---\n${"x".repeat(60_000)}`, 1);
 		writeAged("templates/Huge Template.md", "x".repeat(60_000), 1);
 		const report = scanActiveHygiene(ROOT, NOW, DEFAULTS);
 		const paths = report.oversizedNotes.map((o) => o.path);
 		assert.ok(paths.includes("work/Fat Log.md"));
 		assert.ok(!paths.some((p) => p.includes("Archive")));
+		assert.ok(!paths.some((p) => /Source|Submission|Preserved/.test(p)));
 		assert.ok(!paths.some((p) => p.startsWith("templates/")));
 	});
 
@@ -499,13 +503,16 @@ describe("write-time detectors", () => {
 		assert.match(hint, /토큰 겹침은 문맥을 판단하지 못합니다/);
 		assert.match(hint, /active\/<Topic>\//);
 		const mono = formatMonolithHint("work/Fat.md", 42_000);
-		assert.match(mono, /내용을 줄이지 말고/);
+		assert.match(mono, /문서 역할을 검토하세요/);
 		assert.match(mono, /42KB/);
 	});
 
-	test("isMonolithExempt covers Archive names only", () => {
+	test("isMonolithExempt checks names and frontmatter only", () => {
 		assert.equal(isMonolithExempt("Delivery Log Archive.md"), true);
 		assert.equal(isMonolithExempt("Delivery Log.md"), false);
+		assert.equal(isMonolithExempt("Source.md", "---\ntype: source\n---\n"), true);
+		assert.equal(isMonolithExempt("Source.md", "type: source\n"), false);
+		assert.equal(isMonolithExempt("Draft.md", "---\nsize_policy: preserve\n---\n"), true);
 	});
 });
 
@@ -530,7 +537,7 @@ describe("formatActiveHygiene", () => {
 		});
 		const text = lines.join("\n");
 		assert.match(text, /완료 상태인데 아직 active\//);
-		assert.match(text, /내용을 줄이지 말고 분리/);
+		assert.match(text, /복합 노트만 원문 손실 없이 분리/);
 		assert.match(text, new RegExp(`${OPEN_LOOP_DAYS}일 넘게`));
 		assert.doesNotMatch(text, /om-intake/); // silent segment omitted
 	});

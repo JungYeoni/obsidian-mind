@@ -15,9 +15,9 @@
  *      token. Convention: once a workstream has >1 note, it gets a folder
  *      (`active/<Topic>/`). This catches clusters before they scatter.
  *
- *   3. OVERSIZED NOTES — past ~25KB a note has outgrown one node and wants
- *      a SPLIT, never trimming. Bytes, not lines: giant single-line entries
- *      hide in low line counts.
+ *   3. OVERSIZED NOTES — past ~25KB a working note needs structural review.
+ *      Source/submission artifacts and explicitly preserved documents stay
+ *      intact; mixed working notes can be split verbatim, never trimmed.
  *
  *   4. OPEN LOOPS (#106) — follow-up surfaces (1:1 action items, meeting
  *      follow-ups, incident watch-fors) with live signals that went quiet.
@@ -282,17 +282,21 @@ function findOpenLoops(
 
 // ---------------------------------------------------------------------------
 // Oversized-note detection. Size is a STRUCTURE signal, never a brevity
-// signal: past the threshold a note wants a SPLIT (domain notes / event-log
-// satellites / a cluster folder — verbatim, index left behind), never
-// trimming. Vault-wide by design — existing large chronological logs flag
-// immediately and become the split backlog, not noise.
+// signal: past the threshold a working note needs review. Source artifacts
+// and explicitly preserved documents remain intact; mixed notes may need a
+// verbatim split with an index left behind. Never trim content.
 // ---------------------------------------------------------------------------
 
 export const MONOLITH_BYTES = 25_000;
 
-/** Archive notes are bulk by design — the only exemption. */
-export function isMonolithExempt(filename: string): boolean {
-	return filename.includes("Archive");
+/** Historical bulk, source/submission artifacts, and reviewed preserves are intentional. */
+export function isMonolithExempt(filename: string, content = ""): boolean {
+	if (filename.includes("Archive")) return true;
+	const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? "";
+	return (
+		/^type:\s*["']?(?:source|submission)["']?\s*$/m.test(frontmatter) ||
+		/^size_policy:\s*["']?preserve["']?\s*$/m.test(frontmatter)
+	);
 }
 
 // Never walked for oversize: machinery (shared with the SessionStart
@@ -433,7 +437,7 @@ function findOversizedNotes(
 					continue;
 				try {
 					const size = statSync(join(root, rel)).size;
-					if (size >= MONOLITH_BYTES) {
+					if (size >= MONOLITH_BYTES && !isMonolithExempt(e.name, readFileSync(join(root, rel), "utf8"))) {
 						out.push({ path: rel, sizeKb: Math.round(size / 1000) });
 					}
 				} catch {
@@ -754,7 +758,7 @@ export function formatClusterHint(cluster: TopicCluster): string {
 }
 
 export function formatMonolithHint(path: string, sizeBytes: number): string {
-	return `📐 \`${path}\`이(가) 현재 ${Math.round(sizeBytes / 1000)}KB로 ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘었습니다. 내용을 줄이지 말고 맥락이 남아 있을 때 분리하세요: 도메인 노트 / 이벤트 로그 위성 노트 / 클러스터 폴더로 원문 그대로 옮기고, 기존 파일에는 한 줄짜리 색인을 남긴 뒤 들어오는 링크를 새 위치로 연결합니다. 지금 분리하기 어렵다면 경고를 무시하지 말고 이번 세션에 그 이유를 남기세요.`;
+	return `📐 \`${path}\`이(가) 현재 ${Math.round(sizeBytes / 1000)}KB로 ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘었습니다. 먼저 문서 역할을 검토하세요. 원본 자료·제출물·의도적으로 보존할 문서라면 그대로 두고 메타데이터로 표시합니다. 서로 다른 주제가 섞인 작업 노트라면 내용을 줄이지 말고 원문 그대로 분리하고 기존 파일에 색인을 남기세요.`;
 }
 
 export function scanActiveHygiene(
@@ -823,7 +827,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (oversizedNotes.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘은 노트가 ${oversizedNotes.length}개 있습니다. 내용을 줄이지 말고 분리하세요 (도메인 노트 / 이벤트 로그 위성 노트 / 클러스터 폴더로 원문 그대로 이동하고 기존 파일에는 한 줄짜리 색인 유지):`,
+			`⚠️  ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘은 작업 노트가 ${oversizedNotes.length}개 있습니다. 문서 역할을 검토하고, 복합 노트만 원문 손실 없이 분리하세요:`,
 		);
 		for (const { path, sizeKb } of oversizedNotes) {
 			lines.push(`   - ${path} (${sizeKb}KB)`);

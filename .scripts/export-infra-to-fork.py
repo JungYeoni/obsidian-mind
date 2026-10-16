@@ -14,27 +14,34 @@ and do that yourself.
 import fnmatch
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 VAULT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def tracked_files() -> set[str]:
+    """Vault files git tracks. Gitignored runtime state inside infra folders
+    (om-mcp-audit.jsonl, om-reasoning/, settings.local.json, hint state) must
+    never reach the public fork, so only tracked files are export candidates."""
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=VAULT_ROOT, check=True,
+                         capture_output=True).stdout.decode("utf-8")
+    return {p for p in out.split("\0") if p}
+
+
 def resolve_infra_paths(manifest: dict) -> list[Path]:
-    """Expand each `infrastructure` entry (exact file or `dir/**` glob) into
-    the real files currently on disk, skipping entries that don't exist."""
+    """Expand each `infrastructure` entry (exact file, `dir/**` or glob) into
+    tracked vault files, skipping entries that don't exist."""
+    tracked = tracked_files()
     resolved: list[Path] = []
     for entry in manifest["infrastructure"]:
         if entry.endswith("/**"):
-            base = VAULT_ROOT / entry[:-3]
-            if base.is_dir():
-                resolved.extend(p for p in base.rglob("*") if p.is_file())
-        elif "*" in entry:
-            resolved.extend(VAULT_ROOT.glob(entry))
+            prefix = entry[:-2]
+            matches = [p for p in tracked if p.startswith(prefix)]
         else:
-            p = VAULT_ROOT / entry
-            if p.is_file():
-                resolved.append(p)
+            matches = [p for p in tracked if fnmatch.fnmatchcase(p, entry)]
+        resolved.extend(VAULT_ROOT / p for p in matches if (VAULT_ROOT / p).is_file())
     return resolved
 
 

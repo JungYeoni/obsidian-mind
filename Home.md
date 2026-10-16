@@ -31,6 +31,7 @@ tags:
 
 - [[Index|Work Notes]] | [[People & Context]] | [[Brag Doc]]
 - [[Memories]] | [[North Star]] | [[Learning Index]] | [[Skills]] | [[Reference Index]]
+- [[School|학교 공부]]
 
 ## Recent 1:1s
 

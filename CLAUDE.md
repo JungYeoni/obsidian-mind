@@ -43,6 +43,7 @@ Defined in `.claude/commands/`. Claude Code auto-surfaces every command with its
 | `perf/<cycle>/` | Review cycle briefs + artifacts | Review briefs (private, manager, peer) |
 | `brain/` | Claude's operational knowledge | `Memories.md`, `Key Decisions.md`, `Patterns.md`, `Gotchas.md`, `Skills.md`, `North Star.md` |
 | `learning/` | Learning Debt and verified reusable Knowledge | `Index.md`, viewed through `Learning Dashboard.base` |
+| `school/` | Coursework, class notes, assignments, and exam preparation | `School.md` |
 | `memories/YYYY/MM/` | **Cross-repo agent memory** -- durable lessons recorded over MCP by sessions working in *other* repositories. Time is the only thing in the path; reach is declared in frontmatter | Browse via `bases/Memories.base`; never edit by hand |
 | `org/` | Organizational knowledge index | `People & Context.md` (MOC) |
 | `org/people/` | Atomic person notes | One note per person |
@@ -123,7 +124,7 @@ Use `thinking/` for drafts, reasoning, and analysis before writing final notes. 
 
 1. **Always use YAML frontmatter** with at minimum `date`, `description` (~150 chars), `tags`, and type-specific fields. Incidents and 1:1 notes need `quarter` (e.g., `Q1-2026`); ordinary work notes do not. Incidents also need `ticket`, `severity`, `role`.
 2. **Use templates** from `templates/`. Fill `{{placeholders}}` with real values.
-2b. **Write fully, organize structurally — the vault tidies itself.** Size is a STRUCTURE signal, never a brevity signal: when a note crosses the ~25KB organization threshold (bytes, not lines — giant single-line entries hide in low line counts), the PostToolUse hook flags it at write time and the hygiene scan flags it at session boundaries. The response is always a SPLIT (domain notes, event-log satellites, or a cluster folder — content moved verbatim, one-liner index left behind, inbound links retargeted), never trimming content. The same hook flags write-time topic clusters — token overlap is blind, so judge genuine shared context before grouping. `/om-tidy` is the acting half. Exempt: `*Archive*` notes (bulk is their job).
+2b. **Write fully, organize structurally — the vault tidies itself.** Size is a STRUCTURE signal, never a brevity signal: when a working note crosses the ~25KB organization threshold (bytes, not lines), the PostToolUse hook and hygiene scan ask for a role review. Preserve source artifacts (`type: source`), submissions (`type: submission`), `*Archive*` notes, and reviewed long documents marked `size_policy: preserve`. Split only mixed working notes into verbatim satellites with a short index and links; never trim content. The same hook flags write-time topic clusters — token overlap is blind, so judge genuine shared context before grouping. `/om-tidy` is the acting half.
 3. **Place files correctly**:
    - **Active** work notes, decisions, peer review prep -- `work/active/`
    - **Completed** work notes -- `work/archive/YYYY/` (by year)
@@ -136,6 +137,7 @@ Use `thinking/` for drafts, reasoning, and analysis before writing final notes. 
    - Teams -- `org/teams/`
    - Claude operational context -- `brain/`
    - Learning Debt and reusable Knowledge -- `learning/`
+   - School coursework and study notes -- `school/`
    - Historical import staging -- `imports/historical/` (excluded from ordinary QMD search and om MCP; read only during the explicit import workflow)
    - Codebase knowledge -- `reference/`
    - Drafts -- `thinking/`
@@ -454,9 +456,9 @@ Five lifecycle hooks in `.claude/settings.json`:
 
 | Hook | When | What |
 |------|------|------|
-| SessionStart | On startup/resume | QMD re-index + self-heal, inject North Star, active work, recent changes, tasks, file listing (folders past a note-count threshold collapse to one line), vault-hygiene drift flags (completed-not-archived, ungrouped clusters, 25KB oversize, stale open loops, meetings-inbox pressure); the whole injection is held under a byte budget — over it, low-priority sections degrade to pointers and the closing injection-size meter names each one it dropped |
+| SessionStart | On startup/resume | QMD re-index + self-heal, inject North Star, active work, recent changes, tasks, file listing (folders past a note-count threshold collapse to one line), vault-hygiene drift flags (completed-not-archived, ungrouped clusters, 25KB working-note review, stale open loops, meetings-inbox pressure); the whole injection is held under a byte budget — over it, low-priority sections degrade to pointers and the closing injection-size meter names each one it dropped |
 | UserPromptSubmit | Every message | Classifies content (decision, incident, win, 1:1, architecture, person, project update) and injects routing hints |
-| PostToolUse | After writing `.md` | Validates frontmatter + wikilinks, blocks misplaced memory files, flags notes crossing the 25KB organization threshold (split, don't trim) and write-time topic clusters |
+| PostToolUse | After writing `.md` | Validates frontmatter + wikilinks, blocks misplaced memory files, flags working notes crossing the 25KB organization threshold for review and write-time topic clusters |
 | PreCompact | Before context compaction | Backs up session transcript to `thinking/session-logs/` |
 | Stop | End of every session | Lightweight checklist reminder + concrete vault-hygiene drift findings (same scan as SessionStart). For thorough review, use `/om-wrap-up` instead. |
 
