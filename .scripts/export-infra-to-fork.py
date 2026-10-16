@@ -33,7 +33,10 @@ def tracked_files() -> set[str]:
 # ShardMind's per-install state (which release this vault is on, file hashes)
 # and its cached copy of the release are about THIS vault, not the template
 # fork — a fork carrying them would look like an already-managed install.
-EXPORT_EXCLUDE_PREFIXES = (".shardmind/state.json", ".shardmind/templates/", ".shardmind/backups/")
+# Home.md is this vault's personal dashboard: it links notes that exist only
+# here (Learning Index, Reference Index, School), which the fork's wikilink
+# ratchet test reads as broken. The fork keeps the template's own Home.md.
+EXPORT_EXCLUDE_PREFIXES = (".shardmind/state.json", ".shardmind/templates/", ".shardmind/backups/", "Home.md")
 
 
 def resolve_infra_paths(manifest: dict) -> list[Path]:

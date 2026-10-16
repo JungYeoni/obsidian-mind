@@ -1,5 +1,4 @@
 ---
-date: "2026-09-24"
 description: "Vault entry point — embedded dashboards, quick links, current focus"
 tags:
   - index
@@ -18,10 +17,6 @@ tags:
 ## Recently Touched
 
 ![[Recently Touched.base#Last 7 Days]]
-
-## Learning
-
-![[Learning Dashboard.base#Open Debt]]
 
 ## Incidents
 

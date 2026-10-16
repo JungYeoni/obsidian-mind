@@ -12,6 +12,7 @@
     ".claude-plugin/",
     ".codex/",
     ".gemini/",
-    ".shardmind/"
+    ".shardmind/",
+    "imports/"
   ]
 }
