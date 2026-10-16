@@ -30,6 +30,12 @@ def tracked_files() -> set[str]:
     return {p for p in out.split("\0") if p}
 
 
+# ShardMind's per-install state (which release this vault is on, file hashes)
+# and its cached copy of the release are about THIS vault, not the template
+# fork — a fork carrying them would look like an already-managed install.
+EXPORT_EXCLUDE_PREFIXES = (".shardmind/state.json", ".shardmind/templates/", ".shardmind/backups/")
+
+
 def resolve_infra_paths(manifest: dict) -> list[Path]:
     """Expand each `infrastructure` entry (exact file, `dir/**` or glob) into
     tracked vault files, skipping entries that don't exist."""
@@ -41,6 +47,7 @@ def resolve_infra_paths(manifest: dict) -> list[Path]:
             matches = [p for p in tracked if p.startswith(prefix)]
         else:
             matches = [p for p in tracked if fnmatch.fnmatchcase(p, entry)]
+        matches = [p for p in matches if not p.startswith(EXPORT_EXCLUDE_PREFIXES)]
         resolved.extend(VAULT_ROOT / p for p in matches if (VAULT_ROOT / p).is_file())
     return resolved
 

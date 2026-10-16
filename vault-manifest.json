@@ -1,7 +1,7 @@
 {
   "template": "obsidian-mind",
-  "version": "8.4.0",
-  "released": "2026-09-02",
+  "version": "10.0.0",
+  "released": "2026-10-12",
   "qmd_index": "",
   "qmd_min_version": "2.0.0",
   "open_loop_dirs": [
@@ -13,42 +13,17 @@
     "action items",
     "what to watch"
   ],
-  "eager_layer_budget_bytes": 80000,
+  "eager_layer_budget_bytes": 9100,
+  "eager_layer_instruction_budget_bytes": 20000,
   "listing_collapse_threshold": 12,
   "memory_root": "memories",
-  "team_shared_roots": [
-    {
-      "prefix": "work/active/teeq",
-      "allow_dirs": [
-        "decisions",
-        "dependencies",
-        "hypotheses",
-        "meetings",
-        "product",
-        "questions",
-        "research",
-        "sources",
-        "submissions",
-        "templates",
-        "artifacts",
-        "experiments"
-      ],
-      "allow_root_files": [
-        "teeq.md",
-        "TeeQ Meeting Processing Rule.md",
-        "AGENTS.md",
-        "README.md"
-      ]
-    }
-  ],
+  "team_shared_roots": [],
   "mcp_exposed_roots": [],
   "mcp_never_expose": [],
   "mcp_inbox": "inbox",
   "qmd_context": "Personal engineering context vault shared by Codex and Claude Code across agentic coding projects. Project Hubs under work/ preserve current state, next actions, design decisions, debugging history, verification, and handoffs. Learning Debt captures technologies and architecture used without sufficient understanding; verified study is promoted into reusable Knowledge linked back to source projects. brain/ holds cross-project decisions, patterns, gotchas, and operating context. memories/ stores scoped durable lessons for retrieval from external repositories through the om MCP server. Prefer project-specific truth over duplicated summaries and verified sources over inference.",
   "infrastructure": [
-    "CLAUDE.md",
     "AGENTS.md",
-    "GEMINI.md",
     "Home.md",
     "README.md",
     "README.*.md",
@@ -244,6 +219,34 @@
       "exists": [
         ".claude/agents/correction-sweep.md",
         ".claude/commands/om-correct.md"
+      ],
+      "missing": [
+        ".claude/skills/obsidian-mind/.claude-plugin/plugin.json"
+      ]
+    },
+    "v9.0": {
+      "exists": [
+        ".claude/skills/obsidian-mind/.claude-plugin/plugin.json",
+        ".claude/skills/obsidian-mind/types/index.d.ts",
+        ".claude/skills/obsidian-mind/hooks/context.ts"
+      ],
+      "missing": [
+        ".claude/scripts/upgrade-plan.ts"
+      ]
+    },
+    "v9.1": {
+      "exists": [
+        ".claude/scripts/upgrade-plan.ts"
+      ],
+      "missing": [
+        ".claude/rules/skills.md"
+      ]
+    },
+    "v10.0": {
+      "exists": [
+        ".claude/rules/skills.md",
+        ".claude/rules/hooks-and-mod.md",
+        "AGENTS.md"
       ]
     }
   },

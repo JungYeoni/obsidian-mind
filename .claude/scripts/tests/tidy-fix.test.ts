@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { rmTemp } from "./_helpers.ts";
+import { projectSlug } from "../tidy-fix.ts";
 
 const SCRIPT = resolve(
 	dirname(fileURLToPath(import.meta.url)),
@@ -30,7 +31,12 @@ const SCRIPT = resolve(
 let ROOT = "";
 let MEMDIR = "";
 
-function run(args: string[]): { stdout: string; code: number } {
+function run(
+	args: string[],
+	root = ROOT,
+	memDir = MEMDIR,
+	extraEnv: NodeJS.ProcessEnv = {},
+): { stdout: string; code: number } {
 	const r = spawnSync(
 		process.execPath,
 		["--disable-warning=ExperimentalWarning", "--experimental-strip-types", SCRIPT, ...args],
@@ -38,16 +44,30 @@ function run(args: string[]): { stdout: string; code: number } {
 			encoding: "utf-8",
 			env: {
 				...process.env,
-				CLAUDE_PROJECT_DIR: ROOT,
-				TIDY_FIX_MEMORY_DIR: MEMDIR,
+				CLAUDE_PROJECT_DIR: root,
+				TIDY_FIX_MEMORY_DIR: memDir,
+				...extraEnv,
 			},
 		},
 	);
 	return { stdout: r.stdout ?? "", code: r.status ?? -1 };
 }
 
-function note(rel: string, status: string, date: string): void {
-	const full = join(ROOT, rel);
+/** The lines under one report heading, up to the next blank line. */
+function section(stdout: string, heading: RegExp): string[] {
+	const lines = stdout.split(/\r?\n/);
+	const at = lines.findIndex((l) => heading.test(l));
+	if (at === -1) return [];
+	const out: string[] = [];
+	for (const l of lines.slice(at + 1)) {
+		if (l.trim() === "") break;
+		out.push(l.trim());
+	}
+	return out;
+}
+
+function note(rel: string, status: string, date: string, root = ROOT): void {
+	const full = join(root, rel);
 	mkdirSync(dirname(full), { recursive: true });
 	writeFileSync(
 		full,
@@ -143,5 +163,118 @@ describe("tidy-fix", () => {
 		// The judgment findings are still surfaced.
 		assert.match(stdout, /Mixed Topic\/ — mixed cluster/);
 		assert.match(stdout, /Refused \(judgment — run \/om-tidy\)/);
+	});
+});
+
+/**
+ * "Fixed:" under --apply used to be written before the action ran and never
+ * corrected, so a move that failed — or a stray that could not be read —
+ * still printed as fixed, and an unreadable stray threw and ended the run.
+ */
+describe("tidy-fix — failures are reported as failed, never fixed", () => {
+	let root = "";
+	let mem = "";
+
+	before(() => {
+		root = mkdtempSync(join(tmpdir(), "tidy-fix-fail-"));
+		mem = mkdtempSync(join(tmpdir(), "tidy-fix-fail-mem-"));
+		note("work/active/Blocked.md", "completed", "2025-06-01", root);
+		note("work/active/Movable.md", "completed", "2025-06-01", root);
+		// The destination is a non-empty directory: neither git mv (no repo
+		// here) nor a plain rename can put the note there.
+		mkdirSync(join(root, "work/archive/2025/Blocked.md"), { recursive: true });
+		writeFileSync(join(root, "work/archive/2025/Blocked.md/keep.txt"), "x");
+		mkdirSync(join(root, "brain"), { recursive: true });
+		writeFileSync(join(mem, "MEMORY.md"), "old index\n");
+		// A directory with a markdown name: listed as a stray, unreadable.
+		mkdirSync(join(mem, "unreadable.md"));
+		writeFileSync(join(mem, "good.md"), "# good\n");
+	});
+
+	after(() => {
+		rmTemp(root);
+		rmTemp(mem);
+	});
+
+	test("a failed move and an unreadable stray land under Failed, the rest still go", () => {
+		const { stdout, code } = run(["--apply"], root, mem);
+		const fixed = section(stdout, /^Fixed:$/);
+		const failed = section(stdout, /^Failed/);
+
+		assert.ok(failed.some((l) => l.startsWith("work/active/Blocked.md →")), stdout);
+		assert.ok(!fixed.some((l) => l.includes("Blocked.md")), stdout);
+		assert.ok(existsSync(join(root, "work/active/Blocked.md")));
+
+		assert.ok(failed.some((l) => l.startsWith("memory/unreadable.md →")), stdout);
+		assert.ok(!fixed.some((l) => l.includes("unreadable.md")), stdout);
+
+		// The run did not stop at the first failure.
+		assert.ok(fixed.some((l) => l.startsWith("work/active/Movable.md →")), stdout);
+		assert.ok(existsSync(join(root, "work/archive/2025/Movable.md")));
+		assert.ok(fixed.some((l) => l.startsWith("memory/good.md →")), stdout);
+		assert.equal(readFileSync(join(root, "brain/good.md"), "utf-8"), "# good\n");
+
+		assert.equal(code, 1, "a failed fix must not exit clean");
+	});
+
+	test("dry-run still lists every planned fix and exits 0", () => {
+		const r = mkdtempSync(join(tmpdir(), "tidy-fix-dry-"));
+		try {
+			note("work/active/Blocked.md", "completed", "2025-06-01", r);
+			mkdirSync(join(r, "work/archive/2025/Blocked.md"), { recursive: true });
+			const { stdout, code } = run([], r, mem);
+			assert.equal(code, 0);
+			assert.ok(section(stdout, /^Would fix:$/).some((l) => l.startsWith("work/active/Blocked.md →")));
+			assert.deepEqual(section(stdout, /^Failed/), []);
+		} finally {
+			rmTemp(r);
+		}
+	});
+});
+
+/**
+ * The memory folder used to be derived for POSIX paths only: every Windows
+ * vault returned null, so the misplaced-memory migration never ran there,
+ * and a POSIX path containing `.` or a space derived the wrong folder.
+ * Expected names below are folders Claude Code actually created.
+ */
+describe("projectSlug — Claude Code's project folder naming", () => {
+	test("Windows drive path: colon and separators become dashes", () => {
+		assert.equal(projectSlug(String.raw`C:\Dev\obsidian-mind`), "C--Dev-obsidian-mind");
+		assert.equal(projectSlug("C:/Dev/obsidian-mind"), "C--Dev-obsidian-mind");
+	});
+	test("dots and spaces become dashes; case and existing dashes are kept", () => {
+		assert.equal(projectSlug(String.raw`C:\Dev\site.com-next`), "C--Dev-site-com-next");
+		assert.equal(
+			projectSlug(String.raw`D:\Games\Some Dedicated Server`),
+			"D--Games-Some-Dedicated-Server",
+		);
+		assert.equal(projectSlug(String.raw`C:\Dev\MixedCaseApp`), "C--Dev-MixedCaseApp");
+	});
+	test("a drive root keeps its separator, as Claude Code names it", () => {
+		assert.equal(projectSlug("C:\\"), "C--");
+		assert.equal(projectSlug("/home/a/vault"), "-home-a-vault");
+	});
+});
+
+describe("tidy-fix — memory folder derived without the override", () => {
+	test("finds <config>/projects/<slug>/memory and migrates the stray", () => {
+		const root = mkdtempSync(join(tmpdir(), "tidy-fix-slug-"));
+		const config = mkdtempSync(join(tmpdir(), "tidy-fix-config-"));
+		try {
+			mkdirSync(join(root, "brain"), { recursive: true });
+			const mem = join(config, "projects", projectSlug(root), "memory");
+			mkdirSync(mem, { recursive: true });
+			writeFileSync(join(mem, "MEMORY.md"), "old index\n");
+			writeFileSync(join(mem, "found.md"), "# found\n");
+			const { stdout, code } = run(["--apply"], root, "", { CLAUDE_CONFIG_DIR: config });
+			assert.equal(code, 0, stdout);
+			assert.ok(section(stdout, /^Fixed:$/).some((l) => l.startsWith("memory/found.md →")), stdout);
+			assert.equal(readFileSync(join(root, "brain/found.md"), "utf-8"), "# found\n");
+			assert.ok(!existsSync(join(mem, "found.md")));
+		} finally {
+			rmTemp(root);
+			rmTemp(config);
+		}
 	});
 });

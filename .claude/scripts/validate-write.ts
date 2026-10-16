@@ -20,6 +20,7 @@ import {
 import {
 	countTicketIdWikilinks,
 	isBlockedMemoryPath,
+	parseFrontmatterRequired,
 	shouldSkipFile,
 	validateContent,
 } from "./lib/frontmatter.ts";
@@ -27,16 +28,14 @@ import {
 	MONOLITH_BYTES,
 	formatClusterHint,
 	formatMonolithHint,
-	formatTeamSharedLeakHint,
 	isMonolithExempt,
 	newNoteClusterCandidate,
-	newTeamSharedLeakCandidate,
-	parseTeamSharedRoots,
 } from "./lib/active-hygiene.ts";
 import {
 	shouldRefreshForPath,
 	triggerDebouncedRefresh,
 } from "./lib/qmd-refresh.ts";
+import { resolveProjectDir } from "./lib/project-dir.ts";
 
 type HookInput = {
 	readonly tool_input?: unknown;
@@ -83,7 +82,7 @@ if (shouldRefreshForPath(filePath)) {
 // Memory-location guard (#81) runs BEFORE the vault-root skip: the
 // auto-memory directory lives in ~/.claude/, outside the vault, and would
 // otherwise be skipped. Only MEMORY.md (the auto-loaded index) belongs
-// there — durable knowledge goes to brain/ topic notes per CLAUDE.md.
+// there — durable knowledge goes to brain/ topic notes per .claude/rules/memory.md.
 // PostToolUse can't block the write, but a loud warning makes the
 // violation immediately visible so the file gets migrated before the
 // index drifts. The predicate checks the lexically-normalized path AND
@@ -101,7 +100,7 @@ if (isBlockedMemoryPath(filePath) || isBlockedMemoryPath(resolvedPath)) {
 	const memoryContext = [
 		`⚠️  Memory location violation: \`${file}\` was written to \`~/.claude/.../memory/\`.`,
 		"",
-		"Per CLAUDE.md, this directory should contain only MEMORY.md (the auto-loaded index).",
+		"Per .claude/rules/memory.md, this directory should contain only MEMORY.md (the auto-loaded index).",
 		"All durable knowledge belongs in the vault under `brain/` topic notes:",
 		"",
 		"- Patterns/conventions → `brain/Patterns.md`",
@@ -131,9 +130,9 @@ if (isBlockedMemoryPath(filePath) || isBlockedMemoryPath(resolvedPath)) {
 
 // Vault-root skip AFTER the memory guard (which must inspect outside-vault
 // paths): files outside the vault are not vault notes — no validation.
-// Boundary-safe: "/vault" must not match "/vaulting/…", and an empty env
-// value falls back to cwd (|| not ??).
-const vaultRoot = (process.env["CLAUDE_PROJECT_DIR"] || process.cwd())
+// Boundary-safe: "/vault" must not match "/vaulting/…"; an empty env value
+// falls back to cwd (lib/project-dir.ts).
+const vaultRoot = resolveProjectDir(process.cwd())
 	.replaceAll("\\", "/")
 	.replace(/\/+$/, "");
 const filePathFwd = filePath.replaceAll("\\", "/");
@@ -156,14 +155,26 @@ try {
 	debug(`validate: could not read ${filePath}`);
 	process.exit(0);
 }
-const warnings = validateContent(content);
+const relPath = filePathFwd.startsWith(vaultRoot + "/")
+	? filePathFwd.slice(vaultRoot.length + 1)
+	: filePathFwd;
+// The required fields come from the manifest's frontmatter_required, the
+// same declaration the docs point at; an unreadable manifest falls back to
+// the three global fields.
+let manifest: unknown = null;
+try {
+	manifest = JSON.parse(readFileSync(join(vaultRoot, "vault-manifest.json"), "utf-8"));
+} catch {
+	/* defaults */
+}
+const warnings = validateContent(content, {
+	required: parseFrontmatterRequired(manifest),
+	relPath,
+});
 debug(`validate: ${filePath} — ${warnings.length} warning(s)`);
 
 const blocks: string[] = [];
 const policyResults: PolicyResult[] = [];
-const relPath = filePathFwd.startsWith(vaultRoot + "/")
-	? filePathFwd.slice(vaultRoot.length + 1)
-	: filePathFwd;
 
 if (warnings.length > 0) {
 	const hintList = warnings.map((w) => `  - ${w}`).join("\n");
@@ -219,33 +230,6 @@ try {
 	}
 } catch {
 	debug("validate: cluster check failed — skipped");
-}
-try {
-	let manifestJson: string | null = null;
-	try {
-		manifestJson = readFileSync(join(vaultRoot, "vault-manifest.json"), {
-			encoding: "utf-8",
-		});
-	} catch {
-		/* missing manifest → no configured team-shared roots */
-	}
-	const leak = newTeamSharedLeakCandidate(
-		filePath,
-		vaultRoot,
-		parseTeamSharedRoots(manifestJson),
-	);
-	if (leak !== null) {
-		blocks.push(formatTeamSharedLeakHint(leak));
-		policyResults.push({
-			policy_id: "team-shared-leak",
-			path: relPath,
-			classification: "outside-whitelist",
-			suggested_target: "thinking/",
-			action: "flag",
-		});
-	}
-} catch {
-	debug("validate: team-shared leak check failed — skipped");
 }
 
 if (blocks.length > 0) {

@@ -318,26 +318,32 @@ type Fingerprint = {
 };
 
 /**
+ * Order fingerprint keys by numeric version components (v3.7 < v3.10, unlike
+ * string sort), a missing component counting as 0. Negative when `a` is older.
+ */
+export function compareFingerprintKeys(a: string, b: string): number {
+	const pa = a.replace(/^v/, "").split(".").map(Number);
+	const pb = b.replace(/^v/, "").split(".").map(Number);
+	const len = Math.max(pa.length, pb.length);
+	for (let i = 0; i < len; i++) {
+		const da = pa[i] ?? 0;
+		const db = pb[i] ?? 0;
+		if (da !== db) return da - db;
+	}
+	return 0;
+}
+
+/**
  * Find the latest fingerprint key that has no `missing` field — conceptually
  * "the currently-open-ended release." Returns null if the map is empty or
- * every entry already has a `missing`. Keys are sorted by numeric version
- * components (v3.7 < v3.10, unlike string sort) so the "latest" is the one
- * with the highest major/minor/patch.
+ * every entry already has a `missing`. Keys are sorted with
+ * `compareFingerprintKeys`, so the "latest" is the one with the highest
+ * major/minor/patch.
  */
 export function findLatestOpenFingerprint(
 	fingerprints: Readonly<Record<string, Fingerprint>>,
 ): string | null {
-	const sorted = Object.keys(fingerprints).sort((a, b) => {
-		const pa = a.replace(/^v/, "").split(".").map(Number);
-		const pb = b.replace(/^v/, "").split(".").map(Number);
-		const len = Math.max(pa.length, pb.length);
-		for (let i = 0; i < len; i++) {
-			const da = pa[i] ?? 0;
-			const db = pb[i] ?? 0;
-			if (da !== db) return da - db;
-		}
-		return 0;
-	});
+	const sorted = Object.keys(fingerprints).sort(compareFingerprintKeys);
 	for (let i = sorted.length - 1; i >= 0; i--) {
 		const key = sorted[i]!;
 		if (!fingerprints[key]!.missing) return key;
@@ -451,6 +457,38 @@ function updateShardYaml(version: string): void {
 	writeFileSync(path, bumpShardYamlVersion(content, version), { encoding: "utf-8" });
 }
 
+/** Where the template's Claude Code mod declares its version. */
+export const PLUGIN_JSON = ".claude/skills/obsidian-mind/.claude-plugin/plugin.json";
+
+/**
+ * Set the mod's `version` in its plugin.json to the release version. The mod
+ * ships inside the template, so it carries the template's version; Claude
+ * Code's strict validation requires the field, and a release owns it like it
+ * owns vault-manifest.json and shard.yaml. Key order and formatting are kept.
+ */
+export function bumpPluginJsonVersion(content: string, version: string): string {
+	const plugin = JSON.parse(content) as Record<string, unknown>;
+	if (typeof plugin["version"] !== "string") {
+		throw new Error("plugin.json has no string `version` — refusing to write.");
+	}
+	plugin["version"] = normalizeVersion(version);
+	return JSON.stringify(plugin, null, 2) + "\n";
+}
+
+function updatePluginJson(version: string): void {
+	let content: string;
+	try {
+		content = readFileSync(PLUGIN_JSON, { encoding: "utf-8" });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			process.stderr.write(`${PLUGIN_JSON} not present — skipping the mod's version bump.\n`);
+			return;
+		}
+		throw err;
+	}
+	writeFileSync(PLUGIN_JSON, bumpPluginJsonVersion(content, version), { encoding: "utf-8" });
+}
+
 function main(): void {
 	const version = process.argv[2];
 	if (!version) {
@@ -480,6 +518,7 @@ function main(): void {
 	prependToChangelog(section, version);
 	updateManifest(version, prevTag);
 	updateShardYaml(version);
+	updatePluginJson(version);
 
 	// Print section for GitHub Release body
 	process.stdout.write(section);

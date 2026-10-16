@@ -23,6 +23,10 @@ import {
 	shouldCollapseDir,
 	formatCollapsedDir,
 	parseInjectionBudget,
+	parseInstructionBudget,
+	DEFAULT_INSTRUCTION_BUDGET_BYTES,
+	effectiveInjectionBudget,
+	INJECTION_CEILING_BYTES,
 	parseListingCollapseThreshold,
 	DEFAULT_LISTING_COLLAPSE_THRESHOLD,
 	type BudgetSection,
@@ -47,6 +51,8 @@ import {
 	collectOpenTasks,
 } from "../lib/session-start.ts";
 
+import { cutLine, fitEncoded, fitWithMeter, HOOK_OUTPUT_LIMIT, HOOK_OUTPUT_MAX_CHARS, type OutputLimit } from "../lib/hook-io.ts";
+const CUT_LINE = cutLine(HOOK_OUTPUT_LIMIT);
 import { rmTemp } from "./_helpers.ts";
 
 describe("take", () => {
@@ -401,7 +407,7 @@ describe("MACHINERY_DIRS", () => {
 		// The cached template copy and every pre-update backup snapshot —
 		// engine artifacts that outnumbered real notes 3:1 on a v7.0.1 install.
 		assert.equal(
-			isSkippedPath(".shardmind/templates/CLAUDE.md", MACHINERY_DIRS),
+			isSkippedPath(".shardmind/templates/AGENTS.md", MACHINERY_DIRS),
 			true,
 		);
 		assert.equal(
@@ -734,14 +740,14 @@ describe("parseInfraRootFilenames", () => {
 	});
 	test("returns empty when infrastructure field is not an array", () => {
 		assert.deepEqual(
-			parseInfraRootFilenames(JSON.stringify({ infrastructure: "CLAUDE.md" })),
+			parseInfraRootFilenames(JSON.stringify({ infrastructure: "AGENTS.md" })),
 			[],
 		);
 	});
 	test("returns only the root-level entries (filters out anything containing '/')", () => {
 		const manifest = JSON.stringify({
 			infrastructure: [
-				"CLAUDE.md",
+				"AGENTS.md",
 				"README.*.md",
 				".claude/**",
 				"templates/**",
@@ -749,17 +755,17 @@ describe("parseInfraRootFilenames", () => {
 			],
 		});
 		assert.deepEqual(parseInfraRootFilenames(manifest), [
-			"CLAUDE.md",
+			"AGENTS.md",
 			"README.*.md",
 			"Home.md",
 		]);
 	});
 	test("filters out non-string entries silently", () => {
 		const manifest = JSON.stringify({
-			infrastructure: ["CLAUDE.md", 42, null, "Home.md"],
+			infrastructure: ["AGENTS.md", 42, null, "Home.md"],
 		});
 		assert.deepEqual(parseInfraRootFilenames(manifest), [
-			"CLAUDE.md",
+			"AGENTS.md",
 			"Home.md",
 		]);
 	});
@@ -768,17 +774,17 @@ describe("parseInfraRootFilenames", () => {
 describe("isInfraFilename", () => {
 	// Mirrors the vault-manifest.json shape: literal entries for the canonical
 	// names plus a glob for localized README variants. Both forms must work.
-	const patterns = ["CLAUDE.md", "README.md", "README.*.md", "Home.md"];
+	const patterns = ["AGENTS.md", "README.md", "README.*.md", "Home.md"];
 
 	test("matches literal filenames exactly", () => {
-		assert.equal(isInfraFilename("CLAUDE.md", patterns), true);
+		assert.equal(isInfraFilename("AGENTS.md", patterns), true);
 		assert.equal(isInfraFilename("README.md", patterns), true);
 		assert.equal(isInfraFilename("Home.md", patterns), true);
 	});
 	test("rejects close-but-not-equal filenames", () => {
 		assert.equal(isInfraFilename("claude.md", patterns), false); // case-sensitive
-		assert.equal(isInfraFilename("CLAUDE.md.bak", patterns), false);
-		assert.equal(isInfraFilename("MY-CLAUDE.md", patterns), false);
+		assert.equal(isInfraFilename("AGENTS.md.bak", patterns), false);
+		assert.equal(isInfraFilename("MY-AGENTS.md", patterns), false);
 	});
 	test("glob patterns match the localized variants they target", () => {
 		assert.equal(isInfraFilename("README.ja.md", patterns), true);
@@ -797,11 +803,11 @@ describe("isInfraFilename", () => {
 		assert.equal(isInfraFilename("foo.qux.md", ["*.bar.*"]), false);
 	});
 	test("escapes regex metacharacters in literal segments of patterns", () => {
-		// `.` in `CLAUDE.md` must not match `CLAUDExmd`
-		assert.equal(isInfraFilename("CLAUDExmd", patterns), false);
+		// `.` in `AGENTS.md` must not match `AGENTSxmd`
+		assert.equal(isInfraFilename("AGENTSxmd", patterns), false);
 	});
 	test("returns false on empty pattern list", () => {
-		assert.equal(isInfraFilename("CLAUDE.md", []), false);
+		assert.equal(isInfraFilename("AGENTS.md", []), false);
 	});
 	test("user content files are not infra", () => {
 		assert.equal(isInfraFilename("2026-05-18.md", patterns), false);
@@ -1164,6 +1170,25 @@ describe("manifest budget fields", () => {
 		assert.equal(parseListingCollapseThreshold('{"eager_layer_budget_bytes":25}'), null);
 	});
 
+	test("parseInstructionBudget reads its own field, with the same validation", () => {
+		assert.equal(parseInstructionBudget('{"eager_layer_instruction_budget_bytes":40000}'), 40_000);
+		assert.equal(parseInstructionBudget('{"eager_layer_budget_bytes":40000}'), null);
+		assert.equal(parseInstructionBudget('{"eager_layer_instruction_budget_bytes":0}'), null);
+		assert.equal(parseInstructionBudget('{"eager_layer_instruction_budget_bytes":"40000"}'), null);
+		assert.equal(parseInstructionBudget(null), null);
+	});
+
+	test("the instruction-file default is above the hook-output ceiling, or delivering would gain nothing", () => {
+		assert.ok(DEFAULT_INSTRUCTION_BUDGET_BYTES > INJECTION_CEILING_BYTES);
+	});
+
+	test("the shipped manifest states the same instruction budget the code falls back to", () => {
+		// The manifest shows users the key; the constant covers a vault whose
+		// manifest omits it. They are one default, so they must not drift apart.
+		const manifest = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../vault-manifest.json"), "utf-8");
+		assert.equal(parseInstructionBudget(manifest), DEFAULT_INSTRUCTION_BUDGET_BYTES);
+	});
+
 	test("the shipped default threshold is a positive integer", () => {
 		assert.ok(Number.isInteger(DEFAULT_LISTING_COLLAPSE_THRESHOLD));
 		assert.ok(DEFAULT_LISTING_COLLAPSE_THRESHOLD > 0);
@@ -1183,6 +1208,29 @@ describe("resolveIndexStorePath", () => {
 			join("/home/u", ".cache", "qmd", "my-vault.sqlite"),
 		);
 	});
+
+	/**
+	 * qmd's getDefaultDbPath() checks INDEX_PATH first, for every index name.
+	 * Without it, the store-size check behind bootstrap-vs-update looked at a
+	 * file qmd never opens whenever INDEX_PATH was set.
+	 */
+	test("INDEX_PATH wins over everything, for any index name", () => {
+		const env = { INDEX_PATH: "/pinned/store.sqlite", XDG_CACHE_HOME: "/xdg", HOME: "/h" };
+		assert.equal(resolveIndexStorePath("my-vault", env, "/home/u"), "/pinned/store.sqlite");
+		assert.equal(resolveIndexStorePath("other", env, "/home/u"), "/pinned/store.sqlite");
+	});
+
+	test("empty values count as unset, as qmd's `||` reads them", () => {
+		assert.equal(
+			resolveIndexStorePath("v", { INDEX_PATH: "", XDG_CACHE_HOME: "", HOME: "" }, "/home/u"),
+			join("/home/u", ".cache", "qmd", "v.sqlite"),
+		);
+	});
+
+	test("home is qmd's: HOME, then USERPROFILE, then the OS home", () => {
+		assert.equal(resolveIndexStorePath("v", { HOME: "/h", USERPROFILE: "/u" }, "/os"), join("/h", ".cache", "qmd", "v.sqlite"));
+		assert.equal(resolveIndexStorePath("v", { USERPROFILE: "/u" }, "/os"), join("/u", ".cache", "qmd", "v.sqlite"));
+	});
 });
 
 describe("injectionMode", () => {
@@ -1200,4 +1248,157 @@ describe("injectionMode", () => {
 			assert.equal(injectionMode(source), expected);
 		});
 	}
+});
+
+describe("the injection budget under the hook output cap (#254)", () => {
+	test("the ceiling leaves the meter its headroom under the hook output cap", () => {
+		assert.equal(INJECTION_CEILING_BYTES, 9_100);
+	});
+
+	const cases: ReadonlyArray<readonly [number | null, number, number | undefined]> = [
+		[80_000, 9_100, 80_000], // the old default: clamped, and reported
+		[9_101, 9_100, 9_101], // one over: clamped
+		[9_100, 9_100, undefined], // exactly the ceiling: kept as configured
+		[4_000, 4_000, undefined], // under: kept
+		[null, 9_100, undefined], // unset: the ceiling, with nothing to report
+	];
+	for (const [configured, bytes, clampedFrom] of cases) {
+		test(`effectiveInjectionBudget(${String(configured)}) → ${bytes}${clampedFrom === undefined ? "" : " (clamped)"}`, () => {
+			assert.deepEqual(effectiveInjectionBudget(configured), clampedFrom === undefined ? { bytes } : { bytes, clampedFrom });
+		});
+	}
+
+	test("the meter names a clamp, a collapse and a cut, in that order", () => {
+		assert.equal(
+			formatInjectionSize(9_000, { budgetBytes: 9_100, clampedFrom: 80_000, collapsed: ["Vault File Listing"], cut: true }),
+			"_context injected: 9.0kB / 9.1kB budget (80.0kB configured, held under the hook output cap) — collapsed: Vault File Listing — truncated to fit the hook output cap_",
+		);
+		assert.equal(formatInjectionSize(9_000, { budgetBytes: 9_100 }), "_context injected: 9.0kB / 9.1kB budget_");
+	});
+});
+
+describe("fitWithMeter", () => {
+	const chars = (max: number): OutputLimit => ({ ...HOOK_OUTPUT_LIMIT, max });
+	const meter = (cut: boolean, bytes: number) => `_meter ${bytes}${cut ? " cut" : ""}_`;
+
+	test("output under the cap is the body and the meter, unchanged", () => {
+		assert.equal(fitWithMeter("a\nb\n", meter, chars(100)), "a\nb\n\n_meter 4_\n");
+	});
+
+	test("output over the cap is cut on a line, marked, and closed by the meter", () => {
+		const body = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n") + "\n";
+		const out = fitWithMeter(body, meter, chars(500));
+		assert.ok(out.length <= 500, `output is ${out.length} characters`);
+		assert.ok(out.includes(`\n${CUT_LINE}\n`), "the cut is marked");
+		const lines = out.split("\n");
+		assert.match(lines.at(-2) ?? "", /^_meter \d+ cut_$/);
+		// Every kept line is a whole line of the body.
+		for (const l of lines.slice(0, lines.indexOf(CUT_LINE))) assert.match(l, /^line \d+$/);
+	});
+
+	test("the cut keeps as much as fits: an all-newline body lands one under the cap", () => {
+		// Every position is a line boundary, so the kept prefix is the longest
+		// the arithmetic allows; an off-by-one either way moves this length.
+		// A fixed-width meter, so a size with fewer digits cannot move it too.
+		const out = fitWithMeter("\n".repeat(2_000), (cut) => (cut ? "_m cut_" : "_m_"), chars(500));
+		assert.equal(out.length, 499);
+	});
+
+	test("a body with no line to cut on keeps the partial line, filling the cap exactly", () => {
+		const out = fitWithMeter("x".repeat(2_000), (cut) => (cut ? "_m cut_" : "_m_"), chars(500));
+		assert.equal(out.length, 500);
+		assert.ok(out.startsWith("x".repeat(100)), "the partial line is kept, not dropped");
+	});
+
+	test("a partial line never ends in half of a surrogate pair", () => {
+		// Each emoji is two UTF-16 units; one of the two parities lands mid-pair.
+		for (const cap of [500, 501]) {
+			const out = fitWithMeter("😀".repeat(1_000), (cut) => (cut ? "_m cut_" : "_m_"), chars(cap));
+			assert.ok(out.length <= cap);
+			assert.doesNotThrow(() => encodeURIComponent(out), `a lone surrogate at cap ${cap}`);
+		}
+	});
+
+	test("an oversized meter is cut without leaving half of a surrogate pair", () => {
+		for (const cap of [500, 501]) {
+			const out = fitWithMeter("x".repeat(2_000), () => "😀".repeat(600), chars(cap));
+			assert.ok(out.length <= cap);
+			assert.doesNotThrow(() => encodeURIComponent(out), `a lone surrogate at cap ${cap}`);
+		}
+	});
+
+	test("a meter longer than the cap is cut too: the cap holds for any input", () => {
+		const out = fitWithMeter("a\nb\n", () => "m".repeat(600), chars(500));
+		assert.ok(out.length <= 500, `output is ${out.length} characters`);
+	});
+
+	test("the meter reports the size of what was kept, not of the whole body", () => {
+		const body = "x\n".repeat(1_000);
+		const out = fitWithMeter(body, meter, chars(300));
+		const kept = out.slice(0, out.lastIndexOf("\n\n_meter") + 1);
+		assert.match(out, new RegExp(`_meter ${Buffer.byteLength(kept, "utf-8")} cut_\n$`));
+	});
+
+	test("a byte limit is measured in UTF-8 bytes, cuts on a line, and never splits a character", () => {
+		const limit: OutputLimit = { max: 500, unit: "bytes", name: "a test budget" };
+		// Three bytes per character: 400 characters fit a character cap of 500, not this one.
+		const body = Array.from({ length: 40 }, () => "界".repeat(10)).join("\n") + "\n";
+		const out = fitWithMeter(body, meter, limit);
+		assert.ok(Buffer.byteLength(out, "utf-8") <= 500, `output is ${Buffer.byteLength(out, "utf-8")} bytes`);
+		assert.ok(out.includes(`\n${cutLine(limit)}\n`), "the cut is marked with the limit's name");
+		const lines = out.split("\n");
+		for (const l of lines.slice(0, lines.indexOf(cutLine(limit)))) assert.equal(l, "界".repeat(10));
+	});
+
+	test("a byte limit with no line to cut on keeps whole characters only", () => {
+		for (const max of [500, 501, 502]) {
+			const out = fitWithMeter("界".repeat(1_000), (cut) => (cut ? "_m cut_" : "_m_"), { max, unit: "bytes", name: "a test budget" });
+			assert.ok(Buffer.byteLength(out, "utf-8") <= max);
+			assert.ok(!out.includes("\uFFFD"), `a split character at ${max}`);
+		}
+	});
+
+	test("the hook limit's cut line is the one fitEncoded uses", () => {
+		assert.ok(fitEncoded("x".repeat(100), 60).endsWith(`\n${CUT_LINE}`));
+	});
+});
+
+describe("the eager layer end to end under the cap (#254)", () => {
+	test("sections totalling 30,000 characters degrade, fit, and the meter names what collapsed", () => {
+		// The issue's own test: the budget, the fit and the meter together. The
+		// budget alone brings this one under the cap, so no cut happens.
+		const sections: BudgetSection[] = [
+			{ header: "### Date", body: "Friday", priority: 0 },
+			{ header: "### North Star", body: "n".repeat(6_000), priority: 30, fallback: "(pointer)" },
+			{ header: "### Brain Topics", body: "b".repeat(9_000), priority: 40, fallback: "(pointer)" },
+			{ header: "### Vault File Listing", body: "l".repeat(15_000), priority: 50, fallback: "(pointer)" },
+		];
+		const budget = effectiveInjectionBudget(80_000);
+		const budgeted = applyInjectionBudget(sections, budget.bytes);
+		const out = fitWithMeter(budgeted.text + "\n", (cut, bytes) =>
+			formatInjectionSize(bytes, { budgetBytes: budget.bytes, collapsed: budgeted.collapsed, clampedFrom: budget.clampedFrom, cut }),
+		);
+		assert.ok(out.length <= HOOK_OUTPUT_MAX_CHARS, `output is ${out.length} characters`);
+		assert.ok(!out.includes(CUT_LINE), "the budget was enough; nothing was cut");
+		const meter = out.trimEnd().split("\n").at(-1) ?? "";
+		assert.match(meter, /— collapsed: Vault File Listing, Brain Topics_$/);
+		assert.match(meter, /\(80\.0kB configured, held under the hook output cap\)/);
+		assert.ok(out.includes("n".repeat(6_000)), "North Star fits once the larger sections give way");
+	});
+
+	test("when sections that never degrade pass the cap after every collapse, the fit cuts and the meter says both", () => {
+		const sections: BudgetSection[] = [
+			{ header: "### Open Tasks", body: Array.from({ length: 40 }, (_, i) => `- [ ] task ${i} ${"t".repeat(300)}`).join("\n"), priority: 0 },
+			{ header: "### Vault File Listing", body: "l".repeat(15_000), priority: 50, fallback: "(pointer)" },
+		];
+		const budget = effectiveInjectionBudget(null);
+		const budgeted = applyInjectionBudget(sections, budget.bytes);
+		const out = fitWithMeter(budgeted.text + "\n", (cut, bytes) =>
+			formatInjectionSize(bytes, { budgetBytes: budget.bytes, collapsed: budgeted.collapsed, cut }),
+		);
+		assert.ok(out.length <= HOOK_OUTPUT_MAX_CHARS, `output is ${out.length} characters`);
+		assert.ok(out.includes(`\n${CUT_LINE}\n`), "the cut is marked");
+		const meter = out.trimEnd().split("\n").at(-1) ?? "";
+		assert.match(meter, /— collapsed: Vault File Listing — truncated to fit the hook output cap_$/);
+	});
 });

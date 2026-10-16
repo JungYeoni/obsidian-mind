@@ -63,14 +63,21 @@ export function writeHookOutput(
 	additionalContext: string,
 	policyResults?: readonly PolicyResult[],
 ): void {
-	process.stdout.write(
-		JSON.stringify({
-			hookSpecificOutput:
-				policyResults && policyResults.length > 0
-					? { hookEventName, additionalContext, policyResults }
-					: { hookEventName, additionalContext },
-		}),
-	);
+	// The whole stdout fits the cap, like every writer here (#254): the
+	// context gets what the envelope and any policy results leave. Policy
+	// results that cannot fit beside even the cut marker are dropped rather
+	// than carried over the cap (three raw paths can be 12 KB on Linux).
+	const envelope = (context: string, policies: readonly PolicyResult[]) => ({
+		hookSpecificOutput:
+			policies.length > 0
+				? { hookEventName, additionalContext: context, policyResults: policies }
+				: { hookEventName, additionalContext: context },
+	});
+	const overhead = (policies: readonly PolicyResult[]) => JSON.stringify(envelope("", policies)).length - 2;
+	// The smallest context fitEncoded can return is the marker, quotes included.
+	const minimum = JSON.stringify(CUT_MARKER).length;
+	const policies = policyResults && overhead(policyResults) + minimum <= HOOK_OUTPUT_MAX_CHARS ? policyResults : [];
+	process.stdout.write(JSON.stringify(envelope(fitEncoded(additionalContext, HOOK_OUTPUT_MAX_CHARS - overhead(policies)), policies)));
 }
 
 /**
@@ -79,18 +86,134 @@ export function writeHookOutput(
  * `systemMessage` is the one output field all three agents implement with
  * the same meaning — "show this to the human" — which makes it the only
  * portable channel for a hook that has something to say at session end.
- * The alternative, `hookSpecificOutput.additionalContext`, is Claude-Code-
- * only and is documented as feedback that *continues the conversation* —
- * wrong semantics for a wrap-up reminder, and a re-entry risk on Stop.
+ * On Stop, `hookSpecificOutput.additionalContext` is not an alternative: it is
+ * feedback for the model that *continues the conversation*, and Claude Code
+ * prints it in full for the user too, so it is used only as a fallback
+ * (`writeStopFeedback`).
  *
  * Session-end stdout is JSON-or-nothing on every agent we ship configs for:
  * Codex rejects plain text outright, Gemini's SessionEnd contract is
  * "must not print any plain text to stdout other than the final JSON",
  * and Claude Code routes non-exempt plain stdout to the debug log where
  * nobody reads it. So there is no text path worth keeping.
+ *
+ * A Stop hook's full report reaches the model with the next prompt instead
+ * (lib/stop-handoff.ts); `writeStopFeedback` is its fallback.
  */
 export function writeSystemMessage(message: string): void {
-	process.stdout.write(JSON.stringify({ systemMessage: message }));
+	const overhead = JSON.stringify({ systemMessage: "" }).length - 2;
+	process.stdout.write(JSON.stringify({ systemMessage: fitEncoded(message, HOOK_OUTPUT_MAX_CHARS - overhead) }));
+}
+
+/**
+ * Claude Code turns hook output over 10,000 characters into a short preview
+ * (verified 2026-10-02, #254), so a report past it would reach the agent as
+ * its first couple of KB. Writers hold the whole stdout under this, with
+ * margin, measured after JSON escaping.
+ */
+export const HOOK_OUTPUT_MAX_CHARS = 9_500;
+
+/**
+ * A limit a plain-text output is held under: its size, the unit it is
+ * measured in, and its name for the line that marks a cut.
+ */
+export type OutputLimit = { readonly max: number; readonly unit: "chars" | "bytes"; readonly name: string };
+
+/** Claude Code's hook output cap, counted in UTF-16 units as Claude Code counts characters. */
+export const HOOK_OUTPUT_LIMIT: OutputLimit = { max: HOOK_OUTPUT_MAX_CHARS, unit: "chars", name: "the hook output cap" };
+
+/** The line that replaces whatever a cut to `limit` removed. */
+export const cutLine = (limit: OutputLimit): string => `… (truncated to fit ${limit.name})`;
+
+const CUT_MARKER = `\n${cutLine(HOOK_OUTPUT_LIMIT)}`;
+
+/**
+ * `text`, cut with a marker so that its JSON-encoded form is at most `max`
+ * characters. Escaping (`\n`, `\\`, quotes) is counted, which a cut on the
+ * raw length would miss. It never splits an emoji: JSON.stringify escapes a
+ * lone surrogate to six characters, so a cut inside a pair always costs more
+ * than keeping the whole pair, and the search keeps the longest prefix that
+ * fits.
+ */
+export function fitEncoded(text: string, max: number): string {
+	if (JSON.stringify(text).length <= max) return text;
+	let lo = 0;
+	let hi = text.length;
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (JSON.stringify(text.slice(0, mid) + CUT_MARKER).length <= max) lo = mid;
+		else hi = mid - 1;
+	}
+	return text.slice(0, lo) + CUT_MARKER;
+}
+
+/**
+ * A plain-text output, held under `limit` with its closing meter intact: the
+ * plain-stdout counterpart of fitEncoded. SessionStart's budget already holds
+ * the sections that can degrade; this is the backstop for the ones that never
+ * do (the date, open tasks, hygiene) (#254), under the hook output cap or,
+ * delivered by a mod, under the instruction budget in bytes. Over the limit,
+ * the body is cut at a line boundary and the meter, built with `cut` set,
+ * still closes the output, so a cut is never silent.
+ *
+ * `meter` gets the UTF-8 size of the body it closes. The cut is sized with
+ * the uncut body's meter; the meter is then rebuilt for what was kept, and a
+ * smaller size never formats longer, so the rebuilt output still fits.
+ */
+export function fitWithMeter(
+	body: string,
+	meter: (cut: boolean, bodyBytes: number) => string,
+	limit: OutputLimit = HOOK_OUTPUT_LIMIT,
+): string {
+	const size = (text: string) => (limit.unit === "bytes" ? Buffer.byteLength(text, "utf-8") : text.length);
+	// The longest prefix of `text` at most `n` units long, never half a character.
+	const prefix = (text: string, n: number) =>
+		limit.unit === "bytes"
+			? Buffer.from(text, "utf-8").subarray(0, n).toString("utf-8").replace(/\uFFFD+$/, "")
+			: text.slice(0, n).replace(/[\uD800-\uDBFF]$/, "");
+	const bodyBytes = Buffer.byteLength(body, "utf-8");
+	const whole = `${body}\n${meter(false, bodyBytes)}\n`;
+	if (size(whole) <= limit.max) return whole;
+	const marker = cutLine(limit);
+	const room = limit.max - size(`\n${marker}\n\n${meter(true, bodyBytes)}\n`);
+	// A meter that cannot fit beside any body is itself cut: never in practice
+	// (it is a few hundred characters), but the limit must hold for any input.
+	if (room < 0) return `${prefix(meter(true, 0), Math.max(0, limit.max - 1))}\n`;
+	let head = prefix(body, room);
+	const lastBreak = head.lastIndexOf("\n");
+	// No line to cut on: keep the partial line.
+	if (lastBreak >= 0) head = head.slice(0, lastBreak);
+	const kept = `${head}\n${marker}\n`;
+	return `${kept}\n${meter(true, Buffer.byteLength(kept, "utf-8"))}\n`;
+}
+
+/**
+ * The fallback when a Stop report cannot be saved for the next prompt: the
+ * agent gets `report` now, and the user is shown `summary`.
+ *
+ * Stop's `hookSpecificOutput.additionalContext` is "non-error feedback for
+ * Claude: the conversation continues so Claude can act on it", under the same
+ * loop protections as a block (`stop_hook_active`, the continuation cap). It is
+ * not labelled an error, but Claude Code prints it in full in the transcript
+ * as "Stop hook feedback", so the user reads the whole report too. That is why
+ * it is the fallback and not the path: the next prompt's UserPromptSubmit is
+ * the one channel the user never sees (lib/stop-handoff.ts). A
+ * `decision: "block"` reason is printed in full as well, and labelled a hook
+ * error.
+ *
+ * Both fields share one output cap: the summary gets at most a third, the
+ * report whatever is left. Gemini runs the checklist on SessionEnd and never
+ * gets this. Codex documents Stop's `decision`, but whether it honours Stop
+ * `additionalContext` is unverified.
+ */
+export function writeStopFeedback(report: string, summary: string): void {
+	const shown = fitEncoded(summary, Math.floor(HOOK_OUTPUT_MAX_CHARS / 3));
+	const envelope = (context: string) => ({
+		systemMessage: shown,
+		hookSpecificOutput: { hookEventName: "Stop", additionalContext: context },
+	});
+	const overhead = JSON.stringify(envelope("")).length - 2;
+	process.stdout.write(JSON.stringify(envelope(fitEncoded(report, HOOK_OUTPUT_MAX_CHARS - overhead))));
 }
 
 /**
@@ -117,5 +240,30 @@ export function writeSilentHookOutput(): void {
 		writeSync(1, "{}");
 	} catch {
 		/* stdout gone — nothing to report it to */
+	}
+}
+
+/**
+ * The Stop report as data, for the obsidian-mind mod's own run
+ * (`om_mod: "report"`, lib/om-mod.ts). Not a hook envelope: the mod parses it
+ * and decides what the user and the agent see.
+ *
+ * Written whole: writeSync can return after part of a large buffer on a pipe,
+ * and can fail with EAGAIN when the pipe is full, so it loops until every
+ * byte is out, retrying a full pipe. Any other failure throws: the mod treats
+ * a run that printed no usable report as failed and lets the settings hook
+ * run in its place, which a silently truncated report would not trigger.
+ */
+export function writeStopReportData(
+	report: { readonly key: string; readonly claims: readonly string[]; readonly agentText: string },
+	write: (buffer: Buffer, offset: number, length: number) => number = (buffer, offset, length) => writeSync(1, buffer, offset, length),
+): void {
+	const bytes = Buffer.from(JSON.stringify({ report }), "utf8");
+	for (let offset = 0; offset < bytes.length; ) {
+		try {
+			offset += write(bytes, offset, bytes.length - offset);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EAGAIN") throw error;
+		}
 	}
 }

@@ -35,7 +35,7 @@ Verify the vault matches the expected layout:
 - `learning/` contains only Learning Debt, Knowledge, and its index
 - `templates/` contains only template files (with `{{placeholders}}`)
 - `thinking/` is clean (no leftover drafts that should have been promoted)
-- Nothing unexpected at vault root (allowed: `Home.md`, `CLAUDE.md`, `vault-manifest.json`, `CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, `LICENSE`, `.gitignore` — no user notes)
+- Nothing unexpected at vault root (allowed: `Home.md`, `AGENTS.md`, `vault-manifest.json`, `CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, `LICENSE`, `.gitignore` — no user notes)
 
 ### 2. Check Indexes
 
@@ -142,7 +142,8 @@ Per vault rules, each note should cover ONE concept. Flag notes that:
 
 - `.claude/settings.json` — are hooks well-formed and referencing correct paths?
 - `.claude/commands/` — do all commands reference correct folder structure?
-- `CLAUDE.md` — any stale instructions that contradict current vault state?
+- `AGENTS.md` and `.claude/rules/` — any stale instructions that contradict current vault state?
+- No `CLAUDE.md` at the vault root: Claude Code reads it and skips `AGENTS.md` (the hygiene flags say so too)
 
 ### 12. Fix and Report
 

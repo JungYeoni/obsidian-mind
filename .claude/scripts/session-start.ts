@@ -8,6 +8,14 @@
  * vault markdown file listing.
  *
  * Also persists VAULT_PATH to CLAUDE_ENV_FILE when Claude Code provides it.
+ *
+ * Under the template's Claude Code mod (#264, lib/om-mod.ts) the mod
+ * delivers this output as an instruction file: it runs this script with
+ * `om_mod: "deliver"` (always the full layer, held to
+ * `eager_layer_instruction_budget_bytes` rather than the hook-output cap) and
+ * flags the event it passes down with `om_mod: "standdown"`, on which this
+ * hook exits before any output or side effect. Without the mod, nothing
+ * sends the flag.
  */
 
 import {
@@ -45,12 +53,23 @@ import {
 	isMarkdownFilename,
 	collectOpenTasks,
 	applyInjectionBudget,
+	effectiveInjectionBudget,
 	parseInjectionBudget,
+	parseInstructionBudget,
+	DEFAULT_INSTRUCTION_BUDGET_BYTES,
+	METER_HEADROOM,
+	type InjectionBudget,
 	parseListingCollapseThreshold,
 	shouldCollapseDir,
 	formatCollapsedDir,
 	DEFAULT_LISTING_COLLAPSE_THRESHOLD,
 	type BudgetSection,
+	type BudgetLevel,
+	type NorthStarLadder,
+	northStarLadder,
+	renderHeadlines,
+	topHeadlines,
+	NORTH_STAR_POINTER,
 } from "./lib/session-start.ts";
 import {
 	buildQmdCommand,
@@ -61,11 +80,12 @@ import {
 	formatActiveHygiene,
 	parseMemoryRoot,
 	parseOpenLoopConfig,
-	parseTeamSharedRoots,
 	scanActiveHygiene,
 } from "./lib/active-hygiene.ts";
 
-import { readStdinJson } from "./lib/hook-io.ts";
+import { fitWithMeter, HOOK_OUTPUT_LIMIT, type OutputLimit, readStdinJson } from "./lib/hook-io.ts";
+import { readOmMod } from "./lib/om-mod.ts";
+import { resolveProjectDir } from "./lib/project-dir.ts";
 
 type HookInput = { readonly source?: unknown };
 
@@ -94,7 +114,6 @@ async function readHookInput(): Promise<HookInput | null> {
 	return result;
 }
 const hookInput = await readHookInput();
-const mode = injectionMode(hookInput?.source);
 
 function readManifestRaw(): string | null {
 	try {
@@ -104,12 +123,7 @@ function readManifestRaw(): string | null {
 	}
 }
 
-const cwd =
-	process.env["CLAUDE_PROJECT_DIR"] ??
-	process.env["CODEX_PROJECT_DIR"] ??
-	process.env["GEMINI_PROJECT_DIR"] ??
-	process.cwd();
-process.chdir(cwd);
+const cwd = resolveProjectDir(process.cwd());
 
 // Persist vault path for any downstream shell consumers (Claude Code feature).
 // The whole line comes from formatEnvExport so quoting is not a step anyone
@@ -124,6 +138,21 @@ if (envFile) {
 		/* best-effort — session continues even if persistence fails */
 	}
 }
+
+// A Claude Code mod that delivers this layer itself flags the event it
+// passes down (lib/om-mod.ts): stand down before every other side effect,
+// since the mod's own run of this script performs them. The export above is
+// the exception: Claude Code gives CLAUDE_ENV_FILE to hook processes only, so
+// the mod's run never sees it and this run is the only one that can write it.
+// `deliver` is the mod's run: the output becomes an instruction file, which
+// compaction keeps whole, so it is always the full layer and is not held
+// under the hook-output cap.
+const omMod = readOmMod(hookInput);
+if (omMod === "standdown") process.exit(0);
+const delivering = omMod === "deliver";
+const mode = delivering ? "full" : injectionMode(hookInput?.source);
+
+process.chdir(cwd);
 
 // Manifest is read once and reused: QMD's named index, the infrastructure
 // allowlist for openTasks(), and any future manifest-driven sections all
@@ -280,50 +309,62 @@ function runCmd(
 }
 
 
-function northStar(): string {
+function northStar(): NorthStarLadder | null {
 	// Filesystem-only: the path is fixed by template convention, so there's no
 	// wikilink-resolution value worth a CLI hop — and `spawnSync("obsidian", …)`
 	// launches the Electron app on macOS when no instance is running (#83).
 	//
-	// The 30-line budget must carry LIVE goals (#107): anchor at
-	// "## Current Focus" (skipping frontmatter + preamble) and drop
-	// struck-through completed bullets, which otherwise consume the slice
-	// and truncate current strategy.
+	// The slice must carry LIVE goals (#107), and degrade by levels rather
+	// than vanish when it does not fit (#304): see `northStarLadder`.
 	try {
-		const raw = readFileSync("brain/North Star.md", { encoding: "utf-8" });
-		const lines = stripFrontmatter(raw).split("\n");
-		const anchor = lines.findIndex((l) =>
-			l.trim().startsWith("## Current Focus"),
-		);
-		const scoped = anchor >= 0 ? lines.slice(anchor) : lines;
-		const struckCount = scoped.filter((l) =>
-			l.trimStart().startsWith("- ~~"),
-		).length;
-		const live = scoped.filter((l) => !l.trimStart().startsWith("- ~~"));
-		if (struckCount > 0) {
-			// Struck bullets can carry live tails — keep a pointer so sessions
-			// know completed context exists in the file.
-			live.splice(
-				1,
-				0,
-				`_(${struckCount} completed item${struckCount === 1 ? "" : "s"} hidden — full history in brain/North Star.md)_`,
-			);
-		}
-		return take(live.join("\n"), 30);
+		return northStarLadder(readFileSync("brain/North Star.md", { encoding: "utf-8" }));
 	} catch {
-		return "(not found)";
+		return null;
 	}
 }
 
-function recentChanges(): string {
+/** The North Star section, with its ladder: full → focus → headlines → top-N → pointer. */
+function northStarSection(priority: number): BudgetSection {
+	const ladder = northStar();
+	const header = "### North Star (current goals)";
+	if (ladder === null) return { header, body: "(not found)", priority, fallback: NORTH_STAR_POINTER };
+	const levels: BudgetLevel[] = [];
+	if (ladder.focus !== null) levels.push({ name: "focus", body: ladder.focus });
+	if (ladder.headlines.length > 0) {
+		levels.push(
+			{ name: "headlines", body: renderHeadlines(ladder.headlines) },
+			{ name: "top-N", fit: (room) => topHeadlines(ladder.headlines, room) },
+		);
+	}
+	return { header, body: ladder.full, priority, fallback: NORTH_STAR_POINTER, levels };
+}
+
+/**
+ * A section body with what was cut from its source, so the meter can say so
+ * (no section may present a cut as whole).
+ */
+type Built = { readonly body: string; readonly cut?: string | undefined };
+
+const keptOf = (kept: number, total: number): string | undefined =>
+	total > kept ? `${kept} of ${total}` : undefined;
+
+const RECENT_CHANGES_LIMIT = 15;
+const ACTIVE_WORK_LIMIT = 10;
+const OPEN_TASKS_LIMIT = 10;
+
+function recentChanges(): Built {
 	const r = runCmd("git", [
 		"log",
 		"--oneline",
 		"--since=48 hours ago",
 		"--no-merges",
 	]);
-	if (r.kind !== "ok") return "(no git history)";
-	return formatRecentChanges(r.stdout, 15);
+	if (r.kind !== "ok") return { body: "(no git history)" };
+	const total = r.stdout.split("\n").filter((l) => l.length > 0).length;
+	return {
+		body: formatRecentChanges(r.stdout, RECENT_CHANGES_LIMIT),
+		cut: keptOf(RECENT_CHANGES_LIMIT, total),
+	};
 }
 
 function readMarkdownSource(
@@ -356,12 +397,12 @@ function listMarkdownSources(
 	return sources;
 }
 
-function openTasks(): string {
+function openTasks(): Built {
 	// Filesystem scan, not `obsidian tasks daily todo` (#83 — that CLI flashes
 	// the Electron app on macOS). Order matters: project tasks in work/active/
 	// surface first, then vault-root notes (which is where daily notes live by
 	// Obsidian's default — empirically the dominant task store in user vaults).
-	// Infra files (CLAUDE.md, README.*.md, …) are excluded so the section is
+	// Infra files (AGENTS.md, README.*.md, …) are excluded so the section is
 	// user content only. Paths use forward slashes so the output reads the same
 	// in Claude's context on any OS.
 	const sources = [
@@ -372,7 +413,11 @@ function openTasks(): string {
 			(name) => isInfraFilename(name, infraRootFilenames),
 		),
 	];
-	return collectOpenTasks(sources, 10);
+	const total = sources.reduce(
+		(n, s) => n + s.content.split(/\r?\n/).filter((line) => /^\s*- \[ \]/.test(line)).length,
+		0,
+	);
+	return { body: collectOpenTasks(sources, OPEN_TASKS_LIMIT), cut: keptOf(OPEN_TASKS_LIMIT, total) };
 }
 
 function brainIndex(): string {
@@ -402,15 +447,16 @@ function brainIndex(): string {
 	return formatBrainIndex(parsed);
 }
 
-function activeWork(): string {
+function activeWork(): Built {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync("work/active", { withFileTypes: true });
 	} catch {
-		return "(none)";
+		return { body: "(none)" };
 	}
 	const files = entries.filter((e) => e.isFile()).map((e) => e.name);
-	return formatActiveWork(files, 10);
+	const notes = files.filter((f) => isMarkdownFilename(f)).length;
+	return { body: formatActiveWork(files, ACTIVE_WORK_LIMIT), cut: keptOf(ACTIVE_WORK_LIMIT, notes) };
 }
 
 // Machinery (shared with the oversize scan) plus `thinking/` — scratchpads
@@ -546,12 +592,7 @@ const sections: BudgetSection[] = [
 ];
 if (mode === "full") {
 	sections.push(
-		{
-			header: "### North Star (current goals)",
-			body: northStar(),
-			priority: PRIORITY.NORTH_STAR,
-			fallback: "(Over budget — re-read brain/North Star.md on demand.)",
-		},
+		northStarSection(PRIORITY.NORTH_STAR),
 		{
 			header: "### Brain Topics (read on demand)",
 			body: brainIndex(),
@@ -563,12 +604,12 @@ if (mode === "full") {
 sections.push(
 	{
 		header: "### Recent Changes (last 48h)",
-		body: recentChanges(),
+		...recentChanges(),
 		priority: PRIORITY.RECENT_CHANGES,
 		fallback: "(Over budget — run git log on demand.)",
 	},
-	{ header: "### Open Tasks", body: openTasks(), priority: PRIORITY.VOLATILE },
-	{ header: "### Active Work", body: activeWork(), priority: PRIORITY.VOLATILE },
+	{ header: "### Open Tasks", ...openTasks(), priority: PRIORITY.VOLATILE },
+	{ header: "### Active Work", ...activeWork(), priority: PRIORITY.VOLATILE },
 );
 if (mode === "full") {
 	sections.push({
@@ -609,7 +650,6 @@ const hygieneLines = formatActiveHygiene(
 		parseOpenLoopConfig(manifestJson),
 		infraRootFilenames,
 		parseMemoryRoot(manifestJson),
-		parseTeamSharedRoots(manifestJson),
 	),
 );
 if (hygieneLines.length > 0) {
@@ -620,18 +660,35 @@ if (hygieneLines.length > 0) {
 	});
 }
 
-// The eager layer is held under a byte ceiling. Unset budget = measure only,
-// which is the pre-budget behaviour, so an un-migrated vault is unaffected.
-const budgetBytes = parseInjectionBudget(manifestJson);
-const budgeted = applyInjectionBudget(sections, budgetBytes ?? 0);
+// The eager layer is held under a byte budget, and the budget under Claude
+// Code's hook output cap: past the cap the session gets a 2,000-character
+// preview, so a larger budget never binds (#254). An unset or larger
+// manifest value is clamped, and the meter says so. fitWithMeter is the
+// backstop for the sections that never degrade. Delivered by a mod as an
+// instruction file, the layer is under no hook cap: it gets its own budget,
+// and the backstop holds the whole file to that budget plus the meter's
+// headroom, in bytes, as the hook path holds its budget under the cap.
+const budget: InjectionBudget = delivering
+	? { bytes: parseInstructionBudget(manifestJson) ?? DEFAULT_INSTRUCTION_BUDGET_BYTES }
+	: effectiveInjectionBudget(parseInjectionBudget(manifestJson));
+const budgeted = applyInjectionBudget(sections, budget.bytes);
+const limit: OutputLimit = delivering
+	? { max: budget.bytes + METER_HEADROOM, unit: "bytes", name: "the instruction budget" }
+	: HOOK_OUTPUT_LIMIT;
 
-const body = budgeted.text + "\n";
 process.stdout.write(
-	body +
-		"\n" +
-		formatInjectionSize(Buffer.byteLength(body, "utf-8"), {
-			budgetBytes: budgetBytes ?? undefined,
-			collapsed: budgeted.collapsed,
-		}) +
-		"\n",
+	fitWithMeter(
+		budgeted.text + "\n",
+		(cut, bodyBytes) =>
+			formatInjectionSize(bodyBytes, {
+				budgetBytes: budget.bytes,
+				collapsed: budgeted.collapsed,
+				degraded: budgeted.degraded,
+				cutSections: budgeted.cut,
+				clampedFrom: budget.clampedFrom,
+				cut,
+				cutTo: limit.name,
+			}),
+		limit,
+	),
 );

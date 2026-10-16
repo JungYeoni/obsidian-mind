@@ -11,6 +11,79 @@ Personal customizations on top of upstream, not part of the official obsidian-mi
 
 ### Fixed
 - `completed-not-archived` check now only looks at a project's hub note, not every sub-note inside it — a session-log or submission note marked `status: completed` no longer makes the whole project look done
+## v10.0.0 — 2026-10-12
+
+### Added
+- make AGENTS.md the single instruction file
+
+### Changed
+- say which issues are open for contributions, and require imperative PR titles
+
+### Fixed
+- honor camelCase Stop hook re-entry flags
+- build the mod report preface from the mod's name
+- find frontmatter by its delimiter lines, not every ---
+
+## v9.1.0 — 2026-10-06
+
+### Added
+- make /om-vault-upgrade ShardMind-aware, keeping local improvements through an upgrade
+- add a prose-width rule so vaults stop teaching sessions to hard wrap
+- gate every anchored promoted marker on resolving, and retarget markers on a split
+
+### Fixed
+- run the release job's tests as CI does, and stop two Stop tests depending on qmd
+- require shardmind 0.2.1 so a failed adopt cannot delete a clone's .shardmind files
+- run Codex and Gemini hooks on Windows by a relative script path
+- deliver every live goal at North Star's full level, and report any cut in the meter
+- degrade eager-layer sections by levels instead of collapsing them whole
+- resolve the QMD store path the way qmd does, honouring INDEX_PATH
+- keep the test suite from writing QMD stores and configs into the user's folders
+- enforce every tool's schema required fields in the MCP dispatcher
+- link an informed_by title holding # or | by basename so the link resolves
+- drive the frontmatter write check from frontmatter_required in the manifest
+- drop backticks from memory filenames so a wikilink to them resolves
+- refuse a record_work call with no title instead of writing an undefined note
+- flag mcp_never_expose entries that are paths or folders instead of ignoring them
+- derive the auto-memory directory on Windows so tidy-fix migrates strays there
+- add a trailing flush so edits inside the QMD refresh debounce window get indexed
+- report tidy-fix moves as fixed only when they succeed
+- prefer a runnable qmd install over the first one that merely exists
+- fail charcount when the section is not found, and match ## headings
+
+## v9.0.1 — 2026-10-05
+
+### Fixed
+- require shardmind 0.1.7 so an older engine cannot overwrite edits on update
+
+## v9.0.0 — 2026-10-03
+
+### Added
+- show the Stop report as one line under the answer through the mod
+- deliver session context as an instruction file through a Claude Code mod
+- add om_mod flags to session-start and stop-checklist
+
+### Fixed
+- find the vault root in hook commands after /cd
+- keep hook tests off the real QMD sentinel
+- fail waiting qmd calls when the client's stdin breaks, instead of crashing
+
+## v8.6.0 — 2026-10-02
+
+### Fixed
+- the Stop report shows the user a summary and reaches the agent with the next prompt
+
+## v8.5.0 — 2026-10-02
+
+### Added
+- a changed Stop report reaches the agent, which decides whether to act
+
+### Fixed
+- hold every hook writer under the output cap, with one cut routine
+- hold the eager layer under Claude Code's hook output cap
+- a Stop block carries the report once, as its reason
+- compare Stop findings without their order, cap open loops on raw age
+- route vault hygiene through actionable lifecycle hooks
 
 ## v8.4.0 — 2026-09-02
 

@@ -1,6 +1,7 @@
 /**
- * Active-folder hygiene scan — shared by the SessionStart and Stop hooks
- * (#98/#103), plus the write-time detectors validate-write.ts consumes.
+ * Active-folder hygiene scan — shared by the SessionStart hook and the
+ * conversation-boundary hook (Stop on Claude Code and Codex, SessionEnd on
+ * Gemini; #98/#103), plus the write-time detectors validate-write.ts consumes.
  *
  * Drift modes surfaced:
  *
@@ -15,9 +16,9 @@
  *      token. Convention: once a workstream has >1 note, it gets a folder
  *      (`active/<Topic>/`). This catches clusters before they scatter.
  *
- *   3. OVERSIZED NOTES — past ~25KB a working note needs structural review.
- *      Source/submission artifacts and explicitly preserved documents stay
- *      intact; mixed working notes can be split verbatim, never trimmed.
+ *   3. OVERSIZED NOTES — past ~25KB a note has outgrown one node and wants
+ *      a SPLIT, never trimming. Bytes, not lines: giant single-line entries
+ *      hide in low line counts.
  *
  *   4. OPEN LOOPS (#106) — follow-up surfaces (1:1 action items, meeting
  *      follow-ups, incident watch-fors) with live signals that went quiet.
@@ -28,6 +29,11 @@
  *      by /om-intake; raw exports sitting there are unprocessed by
  *      definition.
  *
+ *   6. LEFTOVER CLAUDE.md (#321) — AGENTS.md is the one instruction file,
+ *      and Claude Code reads a CLAUDE.md beside it instead, silently. An
+ *      update keeps a CLAUDE.md the user edited, so this says so until the
+ *      user's additions are moved to .claude/rules/ and the file is gone.
+ *
  * Philosophy: pattern-based, no LLM, conservative. This NUDGES — it never
  * moves files. False negatives (missing a cluster) are preferable to false
  * positives (nagging about unrelated notes), so the cluster detector leans
@@ -36,8 +42,17 @@
  * topic.
  */
 
-import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
+import {
+	AGENTS_MD_FLAG_BYTES,
+	CLAUDE_MD,
+	GEMINI_MD,
+	GEMINI_SETTINGS,
+	INSTRUCTION_FILE,
+	isRetiredInstructionFile,
+	RETIRED_INSTRUCTION_FILES,
+} from "./instruction-files.ts";
 import { escapeRegex } from "./regex.ts";
 import { parsePromotedMarker, type PromotedRef } from "./memory-promoted.ts";
 import {
@@ -77,6 +92,15 @@ function titleTokens(filename: string): string[] {
 		.split(/[^a-z0-9]+/)
 		.filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !STOPWORDS.has(t));
 }
+
+/**
+ * Numbers in the report that move with no new drift to act on: a note growing
+ * past the threshold, an item a day older. They stay in the message but not
+ * in the report's identity, and neither does the order they sort findings
+ * into (lib/report-key.ts), or a note the agent keeps appending to would
+ * re-show the Stop report every turn — the #252 repeat by another route.
+ */
+export const HYGIENE_VOLATILE_FIELDS: ReadonlySet<string> = new Set(["sizeKb", "ageDays", "oldestDays"]);
 
 export type TopicCluster = {
 	readonly token: string;
@@ -119,7 +143,13 @@ export type ActiveHygieneReport = {
 	readonly openLoops: readonly OpenLoop[];
 	readonly inboxPressure: InboxPressure | null;
 	readonly memoryInbox: MemoryInboxPressure | null;
-	readonly teamSharedLeaks: readonly TeamSharedLeak[];
+	/**
+	 * Retired instruction files at the vault root beside AGENTS.md that still go
+	 * wrong, in RETIRED_INSTRUCTION_FILES order (see LEFTOVER_HARM).
+	 */
+	readonly leftoverInstructionFiles: readonly string[];
+	/** AGENTS.md's size once it reaches AGENTS_MD_FLAG_BYTES, else null. `sizeKb`, so a report's identity ignores it (#252). */
+	readonly agentsMd: { readonly sizeKb: number } | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -250,6 +280,8 @@ function findOpenLoops(
 	}
 
 	const out: OpenLoop[] = [];
+	// Raw timestamps for the sort below: floored day counts tie and then swap.
+	const mtimes = new Map<string, number>();
 	// Overlapping configured dirs (e.g. "work" + "work/meetings") must not
 	// scan a file twice — duplicates would crowd the cap.
 	for (const rel of [...new Set(candidates)]) {
@@ -274,17 +306,20 @@ function findOpenLoops(
 		if (ageDays < OPEN_LOOP_DAYS) continue;
 		const openItems = countOpenLoops(content, config.sectionRe);
 		if (openItems === 0) continue;
+		mtimes.set(rel, mtimeMs);
 		out.push({ path: rel, ageDays, openItems });
 	}
 	// Oldest first, capped — surface the longest-dead loops, stay quiet-ish.
-	return out.sort((a, b) => b.ageDays - a.ageDays).slice(0, OPEN_LOOP_CAP);
+	return out.sort((a, b) => (mtimes.get(a.path) ?? 0) - (mtimes.get(b.path) ?? 0) || a.path.localeCompare(b.path)).slice(0, OPEN_LOOP_CAP);
 }
 
 // ---------------------------------------------------------------------------
 // Oversized-note detection. Size is a STRUCTURE signal, never a brevity
 // signal: past the threshold a working note needs review. Source artifacts
-// and explicitly preserved documents remain intact; mixed notes may need a
-// verbatim split with an index left behind. Never trim content.
+// (`type: source`), submissions (`type: submission`) and reviewed documents
+// marked `size_policy: preserve` stay intact by design, like `*Archive*`
+// notes; mixed working notes may need a verbatim split with an index left
+// behind. Never trim content.
 // ---------------------------------------------------------------------------
 
 export const MONOLITH_BYTES = 25_000;
@@ -331,8 +366,11 @@ export function walkMarkdown(root: string, relDir: string): string[] {
  * trains the reader to ignore the whole section. A hub note is either a
  * loose file directly in active/ root (a single-note project) or the file
  * named after its containing topic folder (work/active/<Topic>/<Topic>.md),
- * per the cluster convention in CLAUDE.md. Anything deeper, or any other
- * name inside a topic folder, is a sub-note and is never checked here.
+ * per the cluster convention in AGENTS.md. Anything deeper, or any other
+ * name inside a topic folder, is a sub-note. The report still lists every
+ * completed note — tidy-fix needs them to archive a fully completed cluster
+ * whole and to refuse a mixed one as judgment — but the hygiene WARNINGS
+ * (SessionStart/Stop) count and list hub notes only.
  */
 function isProjectHubPath(rel: string): boolean {
 	const sub = rel.slice(ACTIVE_REL.length + 1);
@@ -348,7 +386,6 @@ function isProjectHubPath(rel: string): boolean {
 function findCompletedInActive(root: string): string[] {
 	const found: string[] = [];
 	for (const rel of walkMarkdown(root, ACTIVE_REL)) {
-		if (!isProjectHubPath(rel)) continue;
 		let content: string;
 		try {
 			content = readFileSync(join(root, rel), "utf-8");
@@ -431,9 +468,16 @@ function findOversizedNotes(
 			} else if (e.isFile() && isMarkdownFilename(e.name)) {
 				if (isMonolithExempt(e.name)) continue;
 				// Root-level infrastructure docs (README + translations,
-				// CLAUDE.md, …) are repo files, not vault notes — their bulk
+				// AGENTS.md, …) are repo files, not vault notes — their bulk
 				// is not a split candidate.
-				if (relDir === "" && isInfraFilename(e.name, infraRootFilenames))
+				// A retired instruction file is not a note either, whatever the
+				// manifest lists: left over beside AGENTS.md it has its own flag,
+				// which says to move it out, not to split it (#321).
+				if (
+					relDir === "" &&
+					(isInfraFilename(e.name, infraRootFilenames) ||
+						loadsAsRetiredInstructionFile(root, e.name))
+				)
 					continue;
 				try {
 					const size = statSync(join(root, rel)).size;
@@ -616,113 +660,6 @@ function findMemoryInbox(root: string, relDir: string, nowMs: number): MemoryInb
 }
 
 // ---------------------------------------------------------------------------
-// Team-shared subtree boundary (DEC-008, teeq). A project folder mirrored
-// out via `git subtree push` to an external team repo must contain only
-// content meant for that audience — a session work-log or an om
-// `record_work` auto-capture landing at the folder root leaks to every
-// subtree consumer the moment it's written, and neither of those write
-// paths goes through this vault's own Write/Edit tools, so this can only
-// ever be a NUDGE caught at the next scan, never a live block. Config-driven
-// (`team_shared_roots` in vault-manifest.json) so a project opts in without
-// a code change, and so the whitelist lives beside the data it protects
-// instead of inside this file.
-// ---------------------------------------------------------------------------
-
-export type TeamSharedRoot = {
-	readonly prefix: string; // vault-relative folder, e.g. "work/active/teeq"
-	readonly allowDirs: ReadonlySet<string>; // subfolder names allowed directly under prefix
-	readonly allowRootFiles: ReadonlySet<string>; // filenames allowed directly at prefix root
-};
-
-export type TeamSharedLeak = {
-	readonly path: string; // vault-relative
-	readonly root: string; // the prefix it violates
-};
-
-/** No default roots — this is project-specific and opt-in only via the manifest. */
-export function parseTeamSharedRoots(manifestJson: string | null): readonly TeamSharedRoot[] {
-	if (manifestJson === null) return [];
-	try {
-		const raw = (JSON.parse(manifestJson) as Record<string, unknown>)["team_shared_roots"];
-		if (!Array.isArray(raw)) return [];
-		const out: TeamSharedRoot[] = [];
-		for (const entry of raw) {
-			if (typeof entry !== "object" || entry === null) continue;
-			const e = entry as Record<string, unknown>;
-			const prefix = e["prefix"];
-			const allowDirs = e["allow_dirs"];
-			const allowRootFiles = e["allow_root_files"];
-			if (
-				typeof prefix !== "string" ||
-				prefix.length === 0 ||
-				prefix.startsWith("/") ||
-				prefix.split("/").includes("..") ||
-				!Array.isArray(allowDirs) ||
-				!allowDirs.every((x): x is string => typeof x === "string") ||
-				!Array.isArray(allowRootFiles) ||
-				!allowRootFiles.every((x): x is string => typeof x === "string")
-			) {
-				continue; // malformed entry → skip it, not the whole config
-			}
-			out.push({
-				prefix,
-				allowDirs: new Set(allowDirs),
-				allowRootFiles: new Set(allowRootFiles),
-			});
-		}
-		return out;
-	} catch {
-		return [];
-	}
-}
-
-/** Given a subtree-relative path (no leading slash), is it inside the whitelist? */
-function isTeamSharedAllowed(sub: string, cfg: TeamSharedRoot): boolean {
-	const slashIdx = sub.indexOf("/");
-	return slashIdx === -1
-		? cfg.allowRootFiles.has(sub)
-		: cfg.allowDirs.has(sub.slice(0, slashIdx));
-}
-
-function findTeamSharedLeaks(root: string, roots: readonly TeamSharedRoot[]): TeamSharedLeak[] {
-	const out: TeamSharedLeak[] = [];
-	for (const cfg of roots) {
-		for (const rel of walkMarkdown(root, cfg.prefix)) {
-			const sub = rel.slice(cfg.prefix.length + 1);
-			if (!isTeamSharedAllowed(sub, cfg)) out.push({ path: rel, root: cfg.prefix });
-		}
-	}
-	return out.sort((a, b) => a.path.localeCompare(b.path));
-}
-
-export function formatTeamSharedLeakHint(leak: TeamSharedLeak): string {
-	return `🔒 \`${leak.path}\` sits directly under \`${leak.root}/\`, which is mirrored to a team-shared repo via \`git subtree push\`. If it isn't meant for the team (a session work-log, scratch, an om \`record_work\` auto-capture), move it to \`thinking/\`. If it belongs here, put it inside one of the allowed subfolders instead of the root.`;
-}
-
-/**
- * Write-time version: does the just-written file land outside the whitelist
- * of a configured team-shared root? Reuses the same allow-check as the scan
- * so write-time and scan-time can never disagree.
- */
-export function newTeamSharedLeakCandidate(
-	filePath: string,
-	vaultRoot: string,
-	roots: readonly TeamSharedRoot[],
-): TeamSharedLeak | null {
-	const normalized = filePath.replaceAll("\\", "/");
-	const rootFwd = vaultRoot.replaceAll("\\", "/");
-	for (const cfg of roots) {
-		const prefixDir = `${rootFwd}/${cfg.prefix}/`;
-		if (!normalized.startsWith(prefixDir)) continue;
-		const sub = normalized.slice(prefixDir.length);
-		if (!isTeamSharedAllowed(sub, cfg)) {
-			return { path: `${cfg.prefix}/${sub}`, root: cfg.prefix };
-		}
-	}
-	return null;
-}
-
-// ---------------------------------------------------------------------------
 // Write-time detectors — the same logic the scan uses, moved to the moment
 // of write so drift is caught at the keystroke instead of the next session
 // boundary. validate-write.ts calls these.
@@ -751,14 +688,14 @@ export function newNoteClusterCandidate(
 
 export function formatClusterHint(cluster: TopicCluster): string {
 	return [
-		`🗂️  이 노트는 active/에서 "${cluster.token}" 토큰을 공유하는 다른 노트 ${cluster.files.length - 1}개와 같은 주제일 수 있습니다: ${cluster.files.join(", ")}.`,
-		"규칙: 하나의 작업 흐름에 노트가 2개 이상이면 폴더로 묶습니다 (active/<Topic>/, `git mv`, 나중에 archive/에도 같은 폴더 구조 유지).",
-		"토큰 겹침은 문맥을 판단하지 못합니다. 실제로 같은 맥락인지 확인한 뒤 묶고, 아니라면 그대로 진행하세요.",
+		`🗂️  This note joins ${cluster.files.length - 1} loose sibling(s) in active/ sharing "${cluster.token}": ${namesCapped(cluster.files)}.`,
+		"Convention: once a workstream has >1 note it gets a folder (active/<Topic>/, `git mv`, mirror the folder in archive/ later).",
+		"Token overlap is BLIND — judge whether these genuinely share context before grouping; if they don't, say so and move on.",
 	].join("\n");
 }
 
 export function formatMonolithHint(path: string, sizeBytes: number): string {
-	return `📐 \`${path}\`이(가) 현재 ${Math.round(sizeBytes / 1000)}KB로 ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘었습니다. 먼저 문서 역할을 검토하세요. 원본 자료·제출물·의도적으로 보존할 문서라면 그대로 두고 메타데이터로 표시합니다. 서로 다른 주제가 섞인 작업 노트라면 내용을 줄이지 말고 원문 그대로 분리하고 기존 파일에 색인을 남기세요.`;
+	return `📐 \`${path}\` is now ${Math.round(sizeBytes / 1000)}KB — past the ${MONOLITH_BYTES / 1000}KB organization threshold. Do NOT trim the content; SPLIT it while you have the context: domain notes / event-log satellites / a cluster folder, moved verbatim, with a one-liner index left behind and inbound links retargeted. If a split genuinely doesn't fit yet, say why in the session instead of ignoring this.`;
 }
 
 export function scanActiveHygiene(
@@ -767,7 +704,6 @@ export function scanActiveHygiene(
 	openLoopConfig: OpenLoopConfig = parseOpenLoopConfig(null),
 	infraRootFilenames: readonly string[] = [],
 	memoryRoot: string = MEMORY_ROOT_DEFAULT,
-	teamSharedRoots: readonly TeamSharedRoot[] = [],
 ): ActiveHygieneReport {
 	return {
 		completedInActive: findCompletedInActive(root),
@@ -776,8 +712,154 @@ export function scanActiveHygiene(
 		openLoops: findOpenLoops(root, nowMs, openLoopConfig),
 		inboxPressure: findInboxPressure(root, nowMs),
 		memoryInbox: findMemoryInbox(root, memoryRoot, nowMs),
-		teamSharedLeaks: findTeamSharedLeaks(root, teamSharedRoots),
+		leftoverInstructionFiles: findLeftoverInstructionFiles(root),
+		agentsMd: agentsMdPastFlag(root),
 	};
+}
+
+/**
+ * A root file an agent loads as a retired instruction file: the exact name,
+ * or another casing that the filesystem resolves to that same file (Windows,
+ * macOS). On a case-sensitive filesystem a `claude.md` is a plain note, even
+ * beside a real CLAUDE.md, which is a different file there. Same file means
+ * the same real path, which also covers a CLAUDE.md symlinked to it; inode
+ * numbers are not used, as some filesystems report them as 0.
+ */
+function loadsAsRetiredInstructionFile(root: string, name: string): boolean {
+	if (!isRetiredInstructionFile(name)) return false;
+	if (RETIRED_INSTRUCTION_FILES.includes(name)) return true;
+	const real = realPath(join(root, name));
+	return (
+		real !== null &&
+		RETIRED_INSTRUCTION_FILES.some((f) => f.toLowerCase() === name.toLowerCase() && realPath(join(root, f)) === real)
+	);
+}
+
+function realPath(path: string): string | null {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * AGENTS.md's size once it reaches the flag. It is an infrastructure file, so
+ * the oversize scan never sees it, yet a user folding their additions into it
+ * can push it past where Antigravity stops reading, silently.
+ */
+function agentsMdPastFlag(root: string): { sizeKb: number } | null {
+	try {
+		const size = statSync(join(root, INSTRUCTION_FILE)).size;
+		return size >= AGENTS_MD_FLAG_BYTES ? { sizeKb: Math.round(size / 1000) } : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Retired instruction files beside AGENTS.md that still go wrong. Without
+ * AGENTS.md the vault has not upgraded yet, and its old file still carries
+ * everything. A GEMINI.md counts only once Gemini's settings point it at
+ * AGENTS.md: before that, Gemini still reads GEMINI.md, and deleting it would
+ * cut Gemini off.
+ */
+function findLeftoverInstructionFiles(root: string): string[] {
+	if (!existsSync(join(root, INSTRUCTION_FILE))) return [];
+	return RETIRED_INSTRUCTION_FILES.filter(
+		(f) => existsSync(join(root, f)) && (f !== GEMINI_MD || geminiReadsAgentsMd(root)),
+	);
+}
+
+/** Whether .gemini/settings.json lists AGENTS.md in context.fileName. */
+function geminiReadsAgentsMd(root: string): boolean {
+	const names = geminiContextFiles(root);
+	return names.includes(INSTRUCTION_FILE) && !names.includes(GEMINI_MD);
+}
+
+/**
+ * The context files .gemini/settings.json names (context.fileName, a string
+ * or a list), or [] when there is none. Gemini accepts comments and a BOM in
+ * that file, so a strict JSON.parse is tried first and a narrow read of the
+ * fileName value second.
+ */
+function geminiContextFiles(root: string): string[] {
+	let text: string;
+	try {
+		text = readFileSync(join(root, GEMINI_SETTINGS), "utf8").replace(/^\uFEFF/, "");
+	} catch {
+		return [];
+	}
+	try {
+		const names = (JSON.parse(text) as { context?: { fileName?: unknown } }).context?.fileName;
+		return (Array.isArray(names) ? names : [names]).filter((n): n is string => typeof n === "string");
+	} catch {
+		const value = /"fileName"\s*:\s*(\[[^\]]*\]|"[^"]*")/.exec(text)?.[1] ?? "";
+		return [...value.matchAll(/"([^"]*)"/g)].map((m) => m[1]!);
+	}
+}
+
+/** What each retired file does wrong while it stays, and what to do about it. */
+const LEFTOVER_HARM: Readonly<Record<string, string>> = {
+	[CLAUDE_MD]: "Claude Code reads CLAUDE.md and skips AGENTS.md; move your additions to .claude/rules/ and delete it.",
+	[GEMINI_MD]:
+		"Gemini no longer reads GEMINI.md: .gemini/settings.json points it at AGENTS.md. Move anything you added there to AGENTS.md and delete it.",
+};
+
+/**
+ * How many entries a hygiene list prints before "… and N more". The flag's
+ * headline keeps the full count. Hygiene never degrades under the injection
+ * budget, so an uncapped list could fill the hook output cap by itself (#254).
+ */
+export const HYGIENE_LIST_CAP = 10;
+
+/** The first HYGIENE_LIST_CAP items, and the "… and N more" tail when any were left out. */
+function capped<T>(items: readonly T[]): { readonly shown: readonly T[]; readonly more: string | null } {
+	const rest = items.length - HYGIENE_LIST_CAP;
+	return { shown: items.slice(0, HYGIENE_LIST_CAP), more: rest > 0 ? `… and ${rest} more` : null };
+}
+
+function listCapped<T>(items: readonly T[], render: (item: T) => string): string[] {
+	const { shown, more } = capped(items);
+	return more === null ? shown.map(render) : [...shown.map(render), `   - ${more}`];
+}
+
+/** A cluster's file names on one line, capped the same way. */
+export function namesCapped(names: readonly string[]): string {
+	const { shown, more } = capped(names);
+	return more === null ? shown.join(", ") : [...shown, more].join(", ");
+}
+
+/**
+ * Each finding's claim: what it says, without its file list or instructions.
+ * The formatter's headline opens with it, and a Stop summary is made of them
+ * (lib/stop-report.ts), so the two cannot drift apart.
+ */
+const claims = {
+	completed: (n: number) => `${n} note(s) marked done but still in active/`,
+	clusters: () => "Loose active/ notes that look like one topic",
+	oversized: (n: number) => `${n} note(s) past the ${MONOLITH_BYTES / 1000}KB organization threshold`,
+	openLoops: (n: number) => `${n} note(s) with open follow-ups untouched ${OPEN_LOOP_DAYS}+ days`,
+	inbox: (n: number) => `${n} raw export(s) sitting in work/meetings/ for ${INBOX_PRESSURE_DAYS}+ days`,
+	memoryInbox: (n: number) => `${n} cross-repo memory capture(s) awaiting review`,
+	leftover: (file: string) => `${file} present beside AGENTS.md`,
+	agentsMd: (sizeKb: number) => `AGENTS.md is ${sizeKb}KB`,
+};
+
+/** The claim of every finding in `report`, in the order the formatter lists them. */
+export function hygieneClaims(report: ActiveHygieneReport): string[] {
+	const { completedInActive: completedAll, ungroupedClusters, oversizedNotes, openLoops, inboxPressure, memoryInbox, leftoverInstructionFiles, agentsMd } = report;
+	const completedInActive = completedAll.filter(isProjectHubPath);
+	const out: string[] = [];
+	for (const file of leftoverInstructionFiles) out.push(claims.leftover(file));
+	if (agentsMd !== null) out.push(claims.agentsMd(agentsMd.sizeKb));
+	if (completedInActive.length > 0) out.push(claims.completed(completedInActive.length));
+	if (ungroupedClusters.length > 0) out.push(claims.clusters());
+	if (oversizedNotes.length > 0) out.push(claims.oversized(oversizedNotes.length));
+	if (openLoops.length > 0) out.push(claims.openLoops(openLoops.length));
+	if (inboxPressure !== null) out.push(claims.inbox(inboxPressure.count));
+	if (memoryInbox !== null) out.push(claims.memoryInbox(memoryInbox.count));
+	return out;
 }
 
 /**
@@ -786,14 +868,16 @@ export function scanActiveHygiene(
  */
 export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	const {
-		completedInActive,
+		completedInActive: completedAll,
 		ungroupedClusters,
 		oversizedNotes,
 		openLoops,
 		inboxPressure,
 		memoryInbox,
-		teamSharedLeaks,
+		leftoverInstructionFiles,
+		agentsMd,
 	} = report;
+	const completedInActive = completedAll.filter(isProjectHubPath);
 	if (
 		completedInActive.length === 0 &&
 		ungroupedClusters.length === 0 &&
@@ -801,43 +885,55 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 		openLoops.length === 0 &&
 		inboxPressure === null &&
 		memoryInbox === null &&
-		teamSharedLeaks.length === 0
+		leftoverInstructionFiles.length === 0 &&
+		agentsMd === null
 	) {
 		return [];
 	}
 	const lines: string[] = [];
 
+	// First: until they are gone, an agent reads none of the rest of the
+	// conventions this vault ships in AGENTS.md, or loses what the user added.
+	for (const file of leftoverInstructionFiles) {
+		if (lines.length > 0) lines.push("");
+		const harm = LEFTOVER_HARM[file] ?? "it is a retired instruction file; move anything you added there to AGENTS.md and delete it.";
+		lines.push(`⚠️  ${claims.leftover(file)} — ${harm}`);
+	}
+
+	if (agentsMd !== null) {
+		if (lines.length > 0) lines.push("");
+		lines.push(
+			`⚠️  ${claims.agentsMd(agentsMd.sizeKb)} — Antigravity stopped reading it at ~24,000 bytes, silently, and Codex at ~32 KiB (Antigravity 1.3.0, Codex CLI 0.160.0, measured 2026-10-06, #321). Keep it under 23KB. Move a section an agent can safely skip to a file it reads on demand, word for word, and leave a one-line pointer; Claude Code-only additions go to .claude/rules/.`,
+		);
+	}
+
 	if (completedInActive.length > 0) {
 		lines.push(
-			`⚠️  완료 상태인데 아직 active/에 남아 있는 노트가 ${completedInActive.length}개 있습니다. archive/YYYY/로 옮기세요 (/om-project-archive 사용 가능):`,
+			`⚠️  ${claims.completed(completedInActive.length)} — archive to archive/YYYY/ (ask the agent to run om-project-archive):`,
 		);
-		for (const p of completedInActive) lines.push(`   - ${p}`);
+		lines.push(...listCapped(completedInActive, (p) => `   - ${p}`));
 	}
 
 	if (ungroupedClusters.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			"⚠️  active/의 여러 노트가 하나의 주제로 보입니다. 폴더로 묶는 것을 검토하세요 (active/<Topic>/):",
+			`⚠️  ${claims.clusters()} — consider a folder (active/<Topic>/):`,
 		);
-		for (const { token, files } of ungroupedClusters) {
-			lines.push(`   - "${token}": ${files.join(", ")}`);
-		}
+		lines.push(...listCapped(ungroupedClusters, ({ token, files }) => `   - "${token}": ${namesCapped(files)}`));
 	}
 
 	if (oversizedNotes.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  ${MONOLITH_BYTES / 1000}KB 정리 기준을 넘은 작업 노트가 ${oversizedNotes.length}개 있습니다. 문서 역할을 검토하고, 복합 노트만 원문 손실 없이 분리하세요:`,
+			`⚠️  ${claims.oversized(oversizedNotes.length)} — do NOT trim content; SPLIT (domain notes / event-log satellites / a cluster folder, verbatim, one-liner index behind):`,
 		);
-		for (const { path, sizeKb } of oversizedNotes) {
-			lines.push(`   - ${path} (${sizeKb}KB)`);
-		}
+		lines.push(...listCapped(oversizedNotes, ({ path, sizeKb }) => `   - ${path} (${sizeKb}KB)`));
 	}
 
 	if (openLoops.length > 0) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  미완료 후속 작업이 ${OPEN_LOOP_DAYS}일 넘게 갱신되지 않은 노트가 ${openLoops.length}개 있습니다. 완료하거나, 후속 조치하거나, 의도적으로 보류하세요 (경로와 개수만 표시):`,
+			`⚠️  ${claims.openLoops(openLoops.length)} — close, chase, or consciously park (paths + counts only by design):`,
 		);
 		for (const { path, ageDays, openItems } of openLoops) {
 			lines.push(`   - ${path} (${ageDays}d, ${openItems} open item(s))`);
@@ -847,7 +943,7 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (inboxPressure !== null) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  work/meetings/에 ${INBOX_PRESSURE_DAYS}일 넘게 남아 있는 원본 내보내기가 ${inboxPressure.count}개 있습니다 (가장 오래된 항목 ${inboxPressure.oldestDays}일). /om-intake로 수신함을 처리하세요.`,
+			`⚠️  ${claims.inbox(inboxPressure.count)} (oldest ${inboxPressure.oldestDays}d) — ask the agent to run om-intake to drain the inbox.`,
 		);
 	}
 
@@ -857,29 +953,16 @@ export function formatActiveHygiene(report: ActiveHygieneReport): string[] {
 	if (memoryInbox !== null) {
 		if (lines.length > 0) lines.push("");
 		lines.push(
-			`⚠️  검토를 기다리는 저장소 간 메모리 캡처가 ${memoryInbox.count}개 있습니다 (가장 오래된 항목 ${memoryInbox.oldestDays}일). 오래 남길 내용은 적절한 brain/ 노트로 복사하고, 캡처 frontmatter에 복사한 블록을 가리키는 \`promoted: "brain/Note#^om-a1b2c3"\`를 추가하세요. recall은 캡처를 통해서만 brain/ 내용에 도달하므로 원본 캡처는 삭제하지 않습니다. 앵커가 있어야 수정된 내용을 recall이 제공할 수 있으며, \`promoted: <note>\`처럼 노트만 지정하면 대기 개수에서는 빠지지만 내용은 제공되지 않습니다.`,
+			`⚠️  ${claims.memoryInbox(memoryInbox.count)} (oldest ${memoryInbox.oldestDays}d). Promote a durable one by COPYING it into the right brain/ note and adding \`promoted: "brain/Note#^om-a1b2c3"\` to the capture's frontmatter, pointing at the block you copied — the entry stays, because recall reaches brain/ only THROUGH a capture, so deleting it takes the lesson away from every repo that cannot read brain/ at all. The ANCHOR is what lets recall serve the corrected text; a bare \`promoted: <note>\` clears this count but serves nothing.`,
 		);
 		// Evidence for the sentence above, from this vault rather than in the
 		// abstract. Told once the flag is already firing — it never raises one of
 		// its own, because a bare marker is a legitimate promotion. (#183)
 		if (memoryInbox.namedOnly > 0) {
 			lines.push(
-				`   이미 승격된 캡처 ${memoryInbox.namedOnly}개는 앵커 없는 표식만 있어 recall이 내용을 제공하지 못합니다. 복사한 블록의 앵커를 추가해 다시 연결하세요.`,
+				`   ${memoryInbox.namedOnly} already-promoted capture(s) here carry a bare marker, so recall serves none of them. Re-point one by adding the anchor of the block you copied.`,
 			);
 		}
-	}
-
-	if (teamSharedLeaks.length > 0) {
-		if (lines.length > 0) lines.push("");
-		lines.push(
-			`🔒 팀 공유 subtree 루트의 허용 목록 밖에 있는 파일이 ${teamSharedLeaks.length}개 있습니다. 다음 \`git subtree push\` 때 그대로 팀 저장소에 올라갑니다:`,
-		);
-		for (const { path, root } of teamSharedLeaks) {
-			lines.push(`   - ${path} (root: ${root}/)`);
-		}
-		lines.push(
-			"   Move anything here that isn't meant for the team (session work-logs, scratch, om record_work captures) to `thinking/`.",
-		);
 	}
 
 	return lines;

@@ -15,8 +15,9 @@
  * `.shardmind/shard.yaml` is a file we own, so a line-oriented scan is robust
  * enough and keeps the test dependency-free (matching the JSON-reading
  * `hook-config.test.ts`). Path resolution is CWD-independent (via
- * `import.meta.url`) so the test passes both under `npm test` (cwd
- * `.claude/scripts`) and under release.yml's repo-root invocation.
+ * `import.meta.url`) so the test passes under `npm test` (cwd
+ * `.claude/scripts`, as both CI and release.yml run it) and under a direct
+ * `node --test` from the repo root.
  */
 
 import { test, describe } from "node:test";
@@ -30,8 +31,12 @@ const shardYaml = readFileSync(resolve(repoRoot, ".shardmind/shard.yaml"), {
 	encoding: "utf-8",
 });
 
-/** Lowest shardmind engine that understands the split hook lifecycle. */
-const MIN_SHARDMIND: readonly [number, number, number] = [0, 1, 3];
+/** Lowest shardmind engine this shard supports (the hook lifecycle needs 0.1.3; safe updates 0.1.7; safe adopts 0.2.1). */
+// 0.1.7: older engines overwrite user-edited files on update (shardmind#150),
+// and this shard's updates rewrite settings.json hook lines.
+// 0.2.1: a failed or cancelled adopt in a clone of this repo deletes the
+// clone's .shardmind/ files (shardmind#326), and /om-vault-upgrade adopts clones.
+const MIN_SHARDMIND: readonly [number, number, number] = [0, 2, 1];
 
 function gte(
 	a: readonly [number, number, number],

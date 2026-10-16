@@ -5,6 +5,7 @@
 
 import { basename, posix } from "node:path";
 import { readFileSync } from "node:fs";
+import { hardWrappedParagraphs } from "./prose-width.ts";
 
 const ROOT_FILES: ReadonlySet<string> = new Set([
 	"README.md",
@@ -29,7 +30,7 @@ const SKIP_PATH_SEGMENTS: readonly string[] = [
 /**
  * Return true if the path is an auto-memory file in ~/.claude/ that should
  * be flagged (#81). Only MEMORY.md (the auto-loaded index) is allowed there
- * — all durable knowledge goes to brain/ topic notes per CLAUDE.md.
+ * — all durable knowledge goes to brain/ topic notes per .claude/rules/memory.md.
  *
  * The path is lexically normalized first (separators unified, `.`/`..`
  * segments collapsed) so a path can't dodge the check by spelling the
@@ -74,29 +75,145 @@ export function shouldSkipFile(filePath: string): boolean {
 	return false;
 }
 
+/** `vault-manifest.json`'s `frontmatter_required`: `global` plus per-type sets. */
+export type FrontmatterRequired = Readonly<Record<string, readonly string[]>>;
+
+/** Used when the manifest declares no usable `global` set. */
+const DEFAULT_GLOBAL: readonly string[] = ["date", "description", "tags"];
+
+/**
+ * Which note type a vault path is, by folder. The folder→type map is
+ * vault-specific; a future extension point. It mirrors the placement table
+ * in AGENTS.md and /om-vault-audit's per-type rules, which are keyed by
+ * folder too. Tags cannot carry this: 1:1 notes are tagged `work-note`, yet
+ * do not need a work note's `status`.
+ */
+const NOTE_TYPE_BY_FOLDER: readonly (readonly [string, string])[] = [
+	["work/incidents/", "incident"],
+	["work/1-1/", "1-1"],
+	["work/active/", "work-note"],
+	["work/archive/", "work-note"],
+	["org/people/", "person"],
+	["org/teams/", "team"],
+];
+
+export function noteTypeForPath(relPath: string): string | null {
+	const p = relPath.replaceAll("\\", "/");
+	for (const [prefix, type] of NOTE_TYPE_BY_FOLDER) {
+		if (p.startsWith(prefix)) return type;
+	}
+	return null;
+}
+
+/**
+ * Read `frontmatter_required` from a parsed manifest, keeping only string
+ * lists. Anything malformed is dropped rather than guessed at.
+ */
+export function parseFrontmatterRequired(manifest: unknown): FrontmatterRequired {
+	const raw = (manifest as { frontmatter_required?: unknown } | null)?.frontmatter_required;
+	const out: Record<string, readonly string[]> = {};
+	if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+		for (const [type, fields] of Object.entries(raw)) {
+			if (Array.isArray(fields)) {
+				out[type] = fields.filter((f): f is string => typeof f === "string" && f !== "");
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * The top-level keys of a frontmatter block, and its `tags`. A key counts
+ * when its line exists, even with an empty value — a template-born note with
+ * a blank `description:` is filled in afterwards, and was never warned
+ * about. Matched as a KEY at the start of a line: `update:` is not `date`,
+ * which a substring test used to accept.
+ */
+export function readFrontmatterKeys(fm: string): { keys: Set<string>; tags: string[] } {
+	const keys = new Set<string>();
+	const tags: string[] = [];
+	let inTags = false;
+	for (const line of fm.split(/\r?\n/)) {
+		const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line);
+		if (kv) {
+			const key = kv[1] as string;
+			keys.add(key);
+			inTags = key === "tags";
+			if (inTags) {
+				const v = (kv[2] ?? "").trim();
+				const inner = v.startsWith("[") && v.endsWith("]") ? v.slice(1, -1) : v;
+				for (const t of inner.split(",")) {
+					const s = t.trim().replace(/^["']|["']$/g, "");
+					if (s) tags.push(s);
+				}
+			}
+			continue;
+		}
+		const item = inTags ? /^\s+-\s*(.+)$/.exec(line) : null;
+		if (item) tags.push((item[1] as string).trim().replace(/^["']|["']$/g, ""));
+		else if (line.trim() !== "" && !/^\s/.test(line)) inTags = false;
+	}
+	return { keys, tags };
+}
+
+/** The tag that marks a MAIN incident note, the only one the incident set applies to. */
+const INCIDENT_ONLY_TAG = "incident";
+
+/**
+ * The fields a note must declare: the manifest's `global` set (or the
+ * built-in three), plus its folder type's set. In `work/incidents/` the
+ * incident set applies only to a note tagged `incident` — RCAs, deep dives
+ * and drafts live beside the main note and carry the global set alone.
+ */
+export function requiredFieldsFor(
+	required: FrontmatterRequired,
+	relPath: string | null,
+	tags: readonly string[],
+): string[] {
+	const global = required["global"]?.length ? required["global"] : DEFAULT_GLOBAL;
+	const type = relPath === null ? null : noteTypeForPath(relPath);
+	const typed =
+		type === null || (type === "incident" && !tags.includes(INCIDENT_ONLY_TAG))
+			? []
+			: (required[type] ?? []);
+	return [...new Set([...global, ...typed])];
+}
+
+const FIELD_MESSAGES: Readonly<Record<string, string>> = {
+	tags: "Missing `tags` in frontmatter",
+	description: "Missing `description` in frontmatter (~150 chars required by vault convention)",
+	date: "Missing `date` in frontmatter",
+};
+
 /**
  * Inspect markdown content and return a list of warnings. Empty list means
- * the note is valid by our conventions.
+ * the note is valid by our conventions. `required` comes from the manifest's
+ * `frontmatter_required`; `relPath` (vault-relative) decides the note type.
+ * Without either, the three global fields are checked, as before.
  */
-export function validateContent(content: string): string[] {
+export function validateContent(
+	content: string,
+	opts: { readonly required?: FrontmatterRequired; readonly relPath?: string | null } = {},
+): string[] {
 	const warnings: string[] = [];
 
 	if (!content.startsWith("---")) {
 		warnings.push("Missing YAML frontmatter");
 	} else {
-		const parts = content.split("---");
-		if (parts.length >= 3) {
-			const fm = parts[1] ?? "";
-			if (!fm.includes("tags:") && !fm.includes("tags :")) {
-				warnings.push("Missing `tags` in frontmatter");
-			}
-			if (!fm.includes("description:") && !fm.includes("description :")) {
+		// The block ends at the next line that is exactly `---`, not at the next
+		// `---` anywhere: a value holding one (`before --- after`) used to end the
+		// block there and report every later key missing. The same rule as
+		// prose-width.ts, so both readers agree on where frontmatter ends.
+		const lines = content.split(/\r?\n/);
+		const close = lines.indexOf("---", 1);
+		if (close > 0) {
+			const { keys, tags } = readFrontmatterKeys(lines.slice(1, close).join("\n"));
+			for (const field of requiredFieldsFor(opts.required ?? {}, opts.relPath ?? null, tags)) {
+				if (keys.has(field)) continue;
 				warnings.push(
-					"Missing `description` in frontmatter (~150 chars required by vault convention)",
+					FIELD_MESSAGES[field] ??
+						`Missing \`${field}\` in frontmatter (required by vault-manifest.json frontmatter_required)`,
 				);
-			}
-			if (!fm.includes("date:") && !fm.includes("date :")) {
-				warnings.push("Missing `date` in frontmatter");
 			}
 		}
 	}
@@ -104,6 +221,14 @@ export function validateContent(content: string): string[] {
 	if (content.length > 300 && !content.includes("[[")) {
 		warnings.push(
 			"No [[wikilinks]] found — every note must link to at least one other note (vault convention)",
+		);
+	}
+
+	// #247: a wrapped note teaches the wrap to every session that reads it.
+	const wrapped = hardWrappedParagraphs(content);
+	if (wrapped.length > 0) {
+		warnings.push(
+			`${wrapped.length} hard-wrapped paragraph line(s), first at line ${wrapped[0]} — write each paragraph as one line; GitHub renders a single newline as a break (raw captures: \`verbatim: true\` in frontmatter)`,
 		);
 	}
 

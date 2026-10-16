@@ -4,7 +4,7 @@ description: "Self-maintenance pass — acts on every hygiene flag: archives com
 
 # /om-tidy
 
-The acting half of the hygiene system. The SessionStart/Stop hooks and the PostToolUse write-time flags DETECT drift; this command ACTS on it. Run on demand, at wrap-up when flags are present, or when the flag list has visibly piled up.
+The acting half of the hygiene system. The SessionStart and Stop hooks (SessionEnd on Gemini) and the PostToolUse write-time flags DETECT drift; this command ACTS on it. Run on demand, during wrap-up when flags are present, or when the flag list has visibly piled up. Stop fires after every response, so it shows its findings once per session and again only when they change, rather than repeating them every turn.
 
 ## Hard rails (safe by construction)
 
@@ -18,7 +18,7 @@ Work through the current hygiene flags in order:
 
 1. **Completed-not-archived** — `git mv` from `work/active/` to `work/archive/YYYY/`; clusters keep their folder (mirror the grouping); update `work/Index.md`. Same semantics as `/om-project-archive` — use it for anything with ceremony.
 2. **Ungrouped clusters** — when the loose notes genuinely share context (judge, don't trust token overlap): create `work/active/<Topic>/`, `git mv` the members in.
-3. **Oversized working notes (25KB+)** — review the document's role first. Preserve `type: source`, `type: submission`, `*Archive*` notes, and reviewed documents marked `size_policy: preserve` intact. For mixed working notes only, SPLIT, never trim: move whole sections verbatim into domain notes or event-log satellites; leave a short index behind and retarget heading links. Search new notes' concepts (QMD when available) and connect relevant notes.
+3. **Oversized working notes (25KB+)** — review the document's role first. Preserve `type: source`, `type: submission`, `*Archive*` notes, and reviewed documents marked `size_policy: preserve` intact. For mixed working notes only, SPLIT, never trim: move whole sections verbatim into domain notes, event-log satellites, or an archive note; leave a one-liner index behind in the original; retarget links that pointed at the moved sections. **Retarget `promoted:` markers too**: they live in `memories/`, not in the note being split, so nothing in view shows them — `grep -rn "promoted:.*<Note name>#" memories/` finds every capture whose promoted block moved, and each must name the block's new note. A split orphans them silently otherwise; `tests/vault-promoted.test.ts` fails until every anchored marker resolves. A split is complete only when the new notes are wired into the graph — search each new note's concepts (QMD when available) and link what surfaces.
 4. **Index drift, orphans, broken links** — new notes must be linked from at least one note; fix wikilinks broken by any moves this pass made; update `work/Index.md` / `org/People & Context.md` / `perf/Brag Doc.md` as touched.
 5. **Semantic-linking pass** — for notes created or split this pass, `qmd query` their core concepts (index name from `vault-manifest.json`) and add the links the graph is missing.
 6. **Memory-inbox promotion (`memories/YYYY/MM/`)** — durable captures get copied into the right `brain/` topic note. **Promotion is ADDITIVE: copy, never move.** `recall` reaches `brain/` only *through* a capture, so deleting one removes the lesson from every repo that cannot read `brain/` at all — which is the whole audience it was written for.

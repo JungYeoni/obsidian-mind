@@ -4,7 +4,8 @@
  * compacts its context so lost history can be rehydrated from disk if
  * needed. Keeps the most recent 30 backups; older ones are pruned.
  *
- * Backups land in `${CLAUDE_PROJECT_DIR}/thinking/session-logs/` named
+ * Backups land in the vault root's `thinking/session-logs/` (the root found
+ * by lib/project-dir.ts) named
  * `session_<trigger>_<YYYYMMDD_HHMMSS>.jsonl`.
  */
 
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { debug, readStdinJson } from "./lib/hook-io.ts";
 import { isMainModule } from "./lib/main-guard.ts";
 import { triggerDebouncedRefresh } from "./lib/qmd-refresh.ts";
+import { resolveProjectDir } from "./lib/project-dir.ts";
 
 type HookInput = {
 	readonly transcript_path?: unknown;
@@ -90,7 +92,7 @@ if (isMainModule(import.meta.url)) {
 		process.exit(0);
 	}
 
-	const projectDir = process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd();
+	const projectDir = resolveProjectDir(process.cwd());
 	const backupDir = join(projectDir, "thinking/session-logs");
 	mkdirSync(backupDir, { recursive: true });
 

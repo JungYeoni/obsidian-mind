@@ -17,8 +17,9 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
 	resolveQmdEntry,
@@ -199,6 +200,30 @@ describe("resolveVaultRoot", () => {
 		assert.equal(out, "/override/root");
 	});
 
+	test("walks up from a vault subfolder in CLAUDE_PROJECT_DIR to the vault root (#263)", () => {
+		const vault = mkdtempSync(join(tmpdir(), "qmd-mcp-root-"));
+		try {
+			mkdirSync(join(vault, "work", "deep"), { recursive: true });
+			writeFileSync(join(vault, "vault-manifest.json"), "{}");
+			const out = resolveVaultRoot("file:///elsewhere/.claude/scripts/qmd-mcp.mjs", { CLAUDE_PROJECT_DIR: join(vault, "work", "deep") });
+			assert.equal(out, vault);
+		} finally {
+			rmSync(vault, { recursive: true, force: true });
+		}
+	});
+
+	test("passes a directory named vault-manifest.json, as the hook commands' [ -f ] does", () => {
+		const vault = mkdtempSync(join(tmpdir(), "qmd-mcp-dirmarker-"));
+		try {
+			mkdirSync(join(vault, "work", "vault-manifest.json"), { recursive: true });
+			writeFileSync(join(vault, "vault-manifest.json"), "{}");
+			const out = resolveVaultRoot("file:///elsewhere/.claude/scripts/qmd-mcp.mjs", { CLAUDE_PROJECT_DIR: join(vault, "work") });
+			assert.equal(out, vault);
+		} finally {
+			rmSync(vault, { recursive: true, force: true });
+		}
+	});
+
 	test("ignores CLAUDE_PROJECT_DIR when value is empty", () => {
 		const out = resolveVaultRoot(
 			"file:///C:/vault/.claude/scripts/qmd-mcp.mjs",
@@ -242,6 +267,18 @@ describe("resolveIndexSqlitePath", () => {
 	test("falls back to <home>/.cache/qmd/<name>.sqlite when XDG_CACHE_HOME is unset", () => {
 		const out = resolveIndexSqlitePath("my-vault", {}, "/home/user");
 		assert.match(out, /[\\/]home[\\/]user[\\/]\.cache[\\/]qmd[\\/]my-vault\.sqlite$/);
+	});
+	test("an empty XDG_CACHE_HOME counts as unset, as qmd's `||` reads it — never a relative path", () => {
+		const out = resolveIndexSqlitePath("v", { XDG_CACHE_HOME: "" }, "/home/user");
+		assert.match(out, /[\\/]home[\\/]user[\\/]\.cache[\\/]qmd[\\/]v\.sqlite$/);
+	});
+	test("home is qmd's: HOME, then USERPROFILE, then the OS home", () => {
+		assert.match(resolveIndexSqlitePath("v", { HOME: "/h", USERPROFILE: "/u" }, "/os"), /[\\/]h[\\/]\.cache[\\/]qmd[\\/]v\.sqlite$/);
+		assert.match(resolveIndexSqlitePath("v", { USERPROFILE: "/u" }, "/os"), /[\\/]u[\\/]\.cache[\\/]qmd[\\/]v\.sqlite$/);
+	});
+	test("INDEX_PATH is not consulted: this computes the value INDEX_PATH is set to", () => {
+		const out = resolveIndexSqlitePath("v", { INDEX_PATH: "/pinned.sqlite" }, "/home/user");
+		assert.match(out, /[\\/]home[\\/]user[\\/]\.cache[\\/]qmd[\\/]v\.sqlite$/);
 	});
 	test("matches qmd's own getDefaultDbPath rule on all platforms (no Library/Caches, no AppData branch)", () => {
 		// This locks the contract: our INDEX_PATH override must point at the same

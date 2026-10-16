@@ -61,7 +61,10 @@ export interface CaptureResult {
 
 /** Filesystem-safe stem from a title. Separators are stripped, not escaped. */
 export function slugifyTitle(title: unknown): string {
-	return String(title)
+	// Not `String(title)`: `String(undefined)` is "undefined", a non-empty
+	// stem that slipped past captureNote's empty-filename guard.
+	if (typeof title !== "string") return "";
+	return title
 		.normalize("NFKD")
 		.replace(/[^\w\s-]/g, "")
 		.trim()
@@ -385,12 +388,33 @@ export function findToolMarkup(input: Record<string, unknown>): string | null {
 	return describeToolMarkup(input)?.field ?? null;
 }
 
+/** The characters that end a wikilink target: heading, alias, and the brackets. */
+const LINK_TERMINATORS = /[#|[\]]/;
+
+/**
+ * A wikilink to a resolved note, written by `name` when the name survives as
+ * a target and by the note's basename otherwise. Titles routinely carry an
+ * issue number — `Wake on write (#418)` — and resolve as an alias, but
+ * `[[Wake on write (#418)]]` is cut at the `#` into the note `Wake on write (`
+ * and the heading `418)`. The check that admitted the link compared the whole
+ * name; every link reader splits first. So a name holding a terminator links
+ * by basename and keeps the name as the display text, minus the brackets,
+ * which no link can contain at all. A basename that itself holds one cannot
+ * be linked by any form, and is written as plain text rather than broken.
+ */
+export function wikilinkTo(basename: string, name: string): string {
+	if (!LINK_TERMINATORS.test(name)) return `[[${name}]]`;
+	if (LINK_TERMINATORS.test(basename)) return name;
+	const shown = name.replace(/[[\]]/g, "").replace(/\s+/g, " ").trim();
+	return `[[${basename}|${shown}]]`;
+}
+
 /** Render the note body. Pure, so the shape can be asserted without writing. */
 export function renderCapture(
 	input: CaptureInput,
 	dest: Destination,
 	caller: string,
-	resolvable: ReadonlySet<string>,
+	resolvable: ReadonlyMap<string, string>,
 	now: Date,
 ): string {
 	const day = now.toISOString().slice(0, 10);
@@ -406,7 +430,9 @@ export function renderCapture(
 	// trips the vault's own wikilink gate.
 	const linkOrPlain = (raw: unknown): string => {
 		const name = String(raw).replace(/^\[\[|\]\]$/g, "").trim();
-		return resolvable.has(name.toLowerCase()) ? `- [[${name}]]` : `- ${name} _(no note yet)_`;
+		const target = resolvable.get(name.toLowerCase());
+		if (target === undefined) return `- ${name} _(no note yet)_`;
+		return `- ${wikilinkTo(target, name)}`;
 	};
 
 	// `informed_by` becomes wikilinks, which is the point of asking for it: the
@@ -496,7 +522,7 @@ export function captureNote(
 	manifest: Record<string, unknown> | null | undefined,
 	caller: string | null,
 	input: CaptureInput,
-	resolvable: ReadonlySet<string>,
+	resolvable: ReadonlyMap<string, string>,
 	opts: { now?: Date; reindex?: () => boolean } = {},
 ): CaptureResult {
 	const now = opts.now ?? new Date();

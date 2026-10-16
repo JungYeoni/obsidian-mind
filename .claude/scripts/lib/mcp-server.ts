@@ -29,7 +29,7 @@ import {
 import { expandNote } from "./mcp-graph.ts";
 import { qmdProbe, qmdSearch, type QmdClient } from "./mcp-qmd-client.ts";
 import { callerProject, callerProjectSource, CALLER_VAR, isVaultItself, PROJECT_MARKER, sumAuditField, sanitize } from "./mcp-caller.ts";
-import { callerPlatforms, digestsFrom, resolvableNames } from "./mcp-memory-bridge.ts";
+import { callerPlatforms, digestsFrom, resolvableNames, resolvableTargets } from "./mcp-memory-bridge.ts";
 import { captureNote, describeToolMarkup, toolMarkupRefusal } from "./mcp-capture.ts";
 import { semanticMemoryOrder } from "./mcp-memory-bridge.ts";
 import { TOOLS } from "./mcp-tools.ts";
@@ -103,6 +103,35 @@ export interface ServerDeps {
 const text = (s: string): { content: { type: "text"; text: string }[] } => ({
 	content: [{ type: "text", text: s }],
 });
+
+/** How each tool's refusal opens, so a refused call reads like that tool's own. */
+const REFUSAL_VERB: Readonly<Record<string, string>> = {
+	record_work: "Not recorded",
+	remember: "Not remembered",
+};
+
+/**
+ * The first field a call is missing among those its tool's schema marks
+ * `required`, or null. `required` is advisory to a client: one that does not
+ * validate against the schema sends the call anyway, and each handler used to
+ * meet the gap its own way — a `<date>-undefined.md` note, a title of `42`, a
+ * search for "". Checked here, against the same TOOLS that `tools/list`
+ * serves, so a new tool or a new required field is covered without new code.
+ * A string-typed field must be a non-empty string; any other type, present.
+ */
+export function missingRequired(tool: string | undefined, args: Record<string, unknown>): string | null {
+	const schema = TOOLS.find((t) => t.name === tool)?.inputSchema as
+		| { required?: unknown; properties?: Record<string, { type?: unknown }> }
+		| undefined;
+	if (!schema || !Array.isArray(schema.required)) return null;
+	for (const field of schema.required) {
+		if (typeof field !== "string") continue;
+		const v = args[field];
+		const isString = schema.properties?.[field]?.type === "string";
+		if (isString ? typeof v !== "string" || v.trim() === "" : v === undefined || v === null) return field;
+	}
+	return null;
+}
 
 /**
  * Re-index after a write.
@@ -554,6 +583,9 @@ export function createHandlers(deps: ServerDeps): Handlers {
 	}
 
 	function callRecordWork(args: Record<string, unknown>): string {
+		// A missing title or summary never reaches here: the dispatcher refuses
+		// every call that lacks a field its schema marks `required`.
+		//
 		// A field carrying tool-call framing means the call's serialization broke,
 		// not that the author wrote something odd. Refuse: writing it produces a
 		// corrupted note whose damage is invisible until a human reads the rendered
@@ -570,7 +602,7 @@ export function createHandlers(deps: ServerDeps): Handlers {
 			return toolMarkupRefusal(corrupted, args);
 		}
 		const who = callerProject(session.roots);
-		const resolvable = resolvableNames(visibleFiles(ctx.vaultRoot, policy));
+		const resolvable = resolvableTargets(visibleFiles(ctx.vaultRoot, policy));
 		let r;
 		try {
 			r = captureNote(ctx.vaultRoot, policy, ctx.manifest, who, args, resolvable, {
@@ -843,6 +875,14 @@ export function createHandlers(deps: ServerDeps): Handlers {
 			await session.identityReady();
 			const p = (params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
 			const args = p.arguments ?? {};
+			const missing = missingRequired(p.name, args);
+			if (missing) {
+				audit("refused", { tool: p.name, reason: `missing ${missing}` });
+				return session.ok(
+					id,
+					text(`${REFUSAL_VERB[p.name ?? ""] ?? "Not run"}: \`${missing}\` is required and must be a non-empty string.`),
+				);
+			}
 			switch (p.name) {
 				case "search":
 					return session.ok(id, text(await callSearch(args)));

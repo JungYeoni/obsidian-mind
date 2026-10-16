@@ -1,21 +1,81 @@
 # Vault Upgrade
 
-Import and migrate content from an existing Obsidian vault into this obsidian-mind instance. Works with older obsidian-mind versions and arbitrary Obsidian vaults.
+Two jobs, picked by whether a source vault is given:
 
-**When to use**: After downloading or cloning the latest obsidian-mind template, to pull in your existing vault content. Also works for migrating any Obsidian vault into the obsidian-mind structure.
+- **No source: upgrade THIS vault** to the latest template release, through [ShardMind](https://github.com/breferrari/shardmind), keeping every local improvement. See *Upgrade this vault* below.
+- **A source vault: import its content** into this obsidian-mind instance. Works with older obsidian-mind versions and arbitrary Obsidian vaults. See *Workflow* below.
 
 ## Usage
 
 ```
-/om-vault-upgrade <path-to-source-vault>
+/om-vault-upgrade                                   # upgrade this vault (ShardMind)
+/om-vault-upgrade --dry-run                         # show the upgrade plan only
+/om-vault-upgrade <path-to-source-vault>            # import another vault's content
 /om-vault-upgrade <path-to-source-vault> --dry-run
-/om-vault-upgrade --source <path-to-source-vault>
-/om-vault-upgrade --source <path-to-source-vault> --dry-run
+/om-vault-upgrade --source <path-to-source-vault> [--dry-run]
 ```
 
 **Arguments**:
 - `<path-to-source-vault>` — absolute or relative path to the vault to migrate FROM (positional or via `--source`)
-- `--dry-run` — generate the migration plan without executing it (saves to `thinking/`)
+- `--dry-run` — produce the plan without changing anything
+
+## Upgrade this vault (ShardMind)
+
+ShardMind owns the engine lifecycle: `shardmind update` moves a managed vault to a new release, and `shardmind adopt` brings a vault that was cloned without it under management. This command owns the judgment ShardMind's bulk modes cannot make: whether a file that differs from the template is one **you improved** (keep it, and maybe upstream it) or one **you never updated** (take the new version). A blunt use-all-theirs downgrades every local enhancement. A blunt keep-all-mine is worse: it records stale files as yours, so the vault reports itself up to date while those files stay old and no later update touches them.
+
+**Requires ShardMind 0.2.1 or later** (`shardmind --version`; upgrade with `npm i -g shardmind@latest`). Without ShardMind, use *Workflow* below with this vault's previous copy as the source.
+
+### U1. Plan
+
+```bash
+node --experimental-strip-types .claude/scripts/upgrade-plan.ts
+```
+
+It never changes the vault. It detects which case this is:
+
+- **Managed** (`.shardmind/state.json` exists): it reads `shardmind --json` and `shardmind update --dry-run --json`.
+- **Cloned without ShardMind** (a `vault-manifest.json` but no state, including an incomplete adoption): the release the vault came from is the manifest's `version`. It reads `shardmind adopt … --from-version <v> --dry-run --yes --json` and hashes each differing file against that release.
+- **Neither:** not an obsidian-mind vault; use *Workflow* below.
+
+It then prints every file needing judgment, sorted into:
+
+| Section | Meaning | What happens |
+|---|---|---|
+| **Behind** | The template changed it; you never did | Take the new version. Nothing of yours is lost |
+| **Ahead** | Changed only in this vault | Keep yours. List it to the user as an **upstream candidate** if it is an improvement |
+| **Merged** | Changed on both sides, merged cleanly | Show the user the result to review |
+| **Conflicts** | Changed on both sides, or a new template file where you already have one | The user decides per file |
+| **New in the template** | Added | Taken as is |
+| **Move out** | A retired instruction file (`CLAUDE.md`, `GEMINI.md`) still in the vault | Claude Code reads a `CLAUDE.md` and skips `AGENTS.md`; Gemini no longer reads a `GEMINI.md`, so what the user added there is lost. With the user, move what they added: from `GEMINI.md` into `AGENTS.md`; from `CLAUDE.md` into `.claude/rules/local.md` (Claude Code only) or `AGENTS.md` (every agent; keep it under 23 KB, where the hygiene scan flags it: Antigravity stops reading at ~24,000 bytes), then delete it. Nothing is merged automatically |
+| **Settle these first** | Shown above the lists when `AGENTS.md` or `.gemini/settings.json` is a conflict while `CLAUDE.md` or `GEMINI.md` retires (`settleFirst` in `--json`) | The old `AGENTS.md` only points at `CLAUDE.md`, and old Gemini settings send Gemini to `GEMINI.md`, which does the same. Resolve each to the release's version and re-add the user's changes; otherwise a managed update deletes an untouched `CLAUDE.md` and leaves agents without conventions |
+
+Show the report to the user. With `--dry-run`, stop here.
+
+### U2. Apply
+
+ShardMind executes only through its terminal UI (`--json` works with `--dry-run` only), so run it non-interactively: `CI=true … --yes < /dev/null`.
+
+**Managed vault:**
+- **No conflicts:** `CI=true shardmind update --yes < /dev/null`. `--yes` auto-keeps your version wherever both sides changed, so it is safe only once the plan shows no conflicts.
+- **Conflicts:** ask the user to run `! shardmind update` themselves and decide each conflicting file in the prompt, or in their editor.
+
+**Order:** if the plan says *Settle these first*, each listed file is a conflict, so the update runs through the user's own `! shardmind update` (or `decide-per-file` adopt): resolve each there to the release's version, re-adding the user's changes. A managed update deletes an untouched `CLAUDE.md` or `GEMINI.md` in that same run; an unmanaged clone keeps them until these are settled.
+
+**A Move out file the user changed:** the interactive `shardmind update` asks whether to keep or delete it, because the release removed it. Tell the user to answer **keep**: deleting it there loses their additions. Once the update is done, move the additions as U1 says, then delete the file.
+
+**Cloned without ShardMind:**
+1. Write the new release's bytes for the **behind** files only. Each is checked against adopt's plan before it is written, so nothing you changed is touched. A `CLAUDE.md` or `GEMINI.md` listed as behind is one you never edited, and this step **deletes** it, after the new `AGENTS.md` is written: name it to the user and get their yes before running it:
+   ```bash
+   node --experimental-strip-types .claude/scripts/upgrade-plan.ts --apply-behind
+   ```
+2. **No conflicts:** `CI=true shardmind adopt github:breferrari/obsidian-mind --from-version <v> --mode keep-all-mine --yes < /dev/null`. Every file that still differs is now really yours.
+3. **Conflicts:** have the user run `! shardmind adopt github:breferrari/obsidian-mind --from-version <v> --mode decide-per-file` instead.
+
+### U3. Verify
+
+1. `shardmind --json` reports the new version, with `update.kind` `up-to-date`. Its `files.modified` must be exactly the **ahead** files, plus any conflicts the user kept. A behind file listed there was frozen, so fix it before finishing.
+2. The hooks run: `echo '{}' | node --experimental-strip-types .claude/scripts/session-start.ts` exits 0 and prints the session context.
+3. Report the **ahead** files to the user as upstream candidates. A local improvement every vault could use belongs upstream, where the next release carries it.
 
 ## Subagents
 
@@ -59,6 +119,7 @@ Glob all `.md`, `.base`, `.canvas` files and binary files (images, PDFs) in the 
 | `.claude/commands/` not in template | **MERGE** | `.claude/commands/` (user addition) |
 | `.claude/agents/` not in template | **MERGE** | `.claude/agents/` (user addition) |
 | `.claude/scripts/` not in template | **MERGE** | `.claude/scripts/` (user addition) |
+| `.claude/rules/` not in template | **MERGE** | `.claude/rules/` (user addition, such as `local.md` or a section moved out of `AGENTS.md`; its `AGENTS.md` pointer comes with the user's `AGENTS.md` additions) |
 | `scaffold` path with real content | **REPLACE** | Same path in target |
 | `scaffold` path with stub-only content | **SKIP** | Template stub is fine |
 | `user_content_roots` glob | **COPY** | Same relative path |
@@ -123,7 +184,7 @@ Transformations:
 **Conflict section** (if any):
 ```
 ⚠ Conflicts requiring your input:
-  - source has customized CLAUDE.md (will NOT copy — differences logged)
+  - source has a CLAUDE.md (will NOT copy — its additions are listed for .claude/rules/local.md or AGENTS.md)
   - source has .claude/commands/my-custom.md (will MERGE as user addition)
 ```
 
@@ -170,14 +231,14 @@ Migration complete.
 Offer next steps:
 - "Run `/om-vault-audit` for a full structural check"
 - "Review `thinking/migrate-review/` for uncategorized files"
-- "Check `brain/Migration Log.md` for the full receipt and CLAUDE.md diff"
+- "Check `brain/Migration Log.md` for the full receipt and the source CLAUDE.md's additions to fold in"
 
 ## Important
 
 - **The source vault is NEVER modified.** All operations are read-only on the source, write-only on the target.
 - **Plan-first, always.** Never skip the plan presentation step, even if the migration looks simple.
 - **Preserve user curation.** When rebuilding indexes, start from the source's version (which has the user's ordering and groupings), then append missing entries. Don't regenerate from scratch.
-- **CLAUDE.md is special.** Never copy it from the source. The template's CLAUDE.md is always authoritative. If the source has customizations, diff them and log the differences so the user can re-apply manually.
+- **CLAUDE.md is user content, and never copied as CLAUDE.md.** A `CLAUDE.md` at the vault root makes Claude Code skip `AGENTS.md`, the template's one instruction file. If the source has one, diff it against the template's `AGENTS.md` and `.claude/rules/`, and log what it adds so the user can fold each addition into `.claude/rules/local.md` (Claude Code only) or `AGENTS.md` (every agent). Nothing is merged automatically.
 - **Binary files matter.** Images, PDFs, and attachments embedded in notes must be copied or the embeds break.
 - **Wikilinks resolve by filename.** Most folder moves don't break links. Only renames and full-path links need fixing.
 - **Markdown links get converted.** Standard markdown links to local files (`[text](path.md)`) are converted to wikilinks (`[[name|text]]`). External URLs are left as-is.

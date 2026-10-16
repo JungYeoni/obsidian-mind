@@ -27,7 +27,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,10 +41,28 @@ const require = createRequire(import.meta.url);
  * the path math without depending on the current process's working directory
  * or CLAUDE_PROJECT_DIR. Layout assumption: the wrapper lives at
  * `<vault>/.claude/scripts/qmd-mcp.mjs`, so the vault root is two levels up.
+ *
+ * CLAUDE_PROJECT_DIR names the folder the session was launched in, which can
+ * be a vault subfolder (#263), so the root is the nearest folder at or above
+ * it that holds vault-manifest.json, as lib/project-dir.ts resolves it for the
+ * hooks. With no manifest above, the named folder itself.
  */
 export function resolveVaultRoot(metaUrl, env = process.env) {
+	// A regular file, as the hook commands' `[ -f ]` tests: a directory of that name is not a vault.
+	const isFile = (path) => {
+		try {
+			return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+		} catch {
+			return false;
+		}
+	};
 	const envRoot = env["CLAUDE_PROJECT_DIR"];
-	if (envRoot && isAbsolute(envRoot)) return envRoot;
+	if (envRoot && isAbsolute(envRoot)) {
+		for (let dir = envRoot; ; dir = dirname(dir)) {
+			if (isFile(join(dir, "vault-manifest.json"))) return dir;
+			if (dirname(dir) === dir) return envRoot;
+		}
+	}
 	return resolve(dirname(fileURLToPath(metaUrl)), "..", "..");
 }
 
@@ -57,12 +75,58 @@ const VAULT_ROOT = resolveVaultRoot(import.meta.url);
  * Locate @tobilu/qmd's real JS entrypoint. Returns an absolute path when
  * resolvable, null when not. Exported so the cross-platform test matrix can
  * verify resolution works on Windows, macOS, and Linux without having to
- * spawn the wrapper itself.
+ * spawn the wrapper itself. A runnable install is preferred over one that
+ * merely exists — see `pickQmdEntry`.
  */
 export function resolveQmdEntry() {
+	return pickQmdEntry([localQmdEntry, globalQmdEntry], isRunnableQmdEntry);
+}
+
+/**
+ * Choose among candidate entrypoints, in order. Duplicated from
+ * `lib/qmd.ts:pickQmdEntry` (this file is .mjs and can't import the .ts lib
+ * at strip-types runtime); the test suite drives both copies through the
+ * same cases.
+ *
+ * - The first present candidate that passes `runnable` wins, so a broken
+ *   first install cannot shadow a working later one.
+ * - When every present candidate fails, the FIRST present one is returned,
+ *   not null: SessionStart's ABI self-heal needs a broken entry to find the
+ *   package it rebuilds.
+ * - A lone candidate is returned without a probe, since probing could not
+ *   change the answer.
+ */
+export function pickQmdEntry(sources, runnable) {
+	let firstPresent = null;
+	for (let i = 0; i < sources.length; i++) {
+		const entry = sources[i]();
+		if (entry === null) continue;
+		if (firstPresent === null && i === sources.length - 1) return entry;
+		if (runnable(entry)) return entry;
+		firstPresent ??= entry;
+	}
+	return firstPresent;
+}
+
+/** Does this entrypoint actually start? Bounded `--version` probe. */
+export function isRunnableQmdEntry(entry) {
+	const probe = spawnSync(process.execPath, [entry, "--version"], {
+		encoding: "utf8",
+		timeout: 10_000,
+		windowsHide: true,
+	});
+	return !probe.error && probe.signal === null && probe.status === 0;
+}
+
+function localQmdEntry() {
 	try {
 		return require.resolve("@tobilu/qmd/dist/cli/qmd.js");
-	} catch {}
+	} catch {
+		return null;
+	}
+}
+
+function globalQmdEntry() {
 
 	// Fallback for global npm installs that aren't on this package's resolution
 	// path — ask npm directly where global packages live. Bounded timeout so a
@@ -201,7 +265,11 @@ export function resolveQmdIndex(manifestJson, vaultRoot) {
  * per-platform branch.
  */
 export function resolveIndexSqlitePath(indexName, env, home) {
-	const base = env["XDG_CACHE_HOME"] ?? join(home, ".cache");
+	// qmd's getDefaultDbPath() without its INDEX_PATH step: this computes the
+	// value INDEX_PATH is set to, and runAsMcp only calls it when INDEX_PATH is
+	// unset. Empty values count as unset (qmd uses `||`), and home is qmd's
+	// qmdHomedir(): HOME, then USERPROFILE, then the OS home.
+	const base = env["XDG_CACHE_HOME"] || join(env["HOME"] || env["USERPROFILE"] || home, ".cache");
 	return join(base, "qmd", `${indexName}.sqlite`);
 }
 

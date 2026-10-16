@@ -2,7 +2,7 @@
 
 This document describes how obsidian-mind fits together — the load-bearing seams, the design choices behind them, and where to extend the system. It is aimed at contributors and anyone forking the template who wants to customize it without breaking the mechanics.
 
-It is not a folder tour. For the day-to-day layout, read `CLAUDE.md`. For the user-facing story, read `README.md`.
+It is not a folder tour. For the day-to-day layout, read `AGENTS.md`. For the user-facing story, read `README.md`.
 
 ---
 
@@ -11,7 +11,7 @@ It is not a folder tour. For the day-to-day layout, read `CLAUDE.md`. For the us
 obsidian-mind is a plain Obsidian vault with four systems layered on top:
 
 1. **The vault itself** — Markdown files, frontmatter, wikilinks. Portable, git-tracked, Obsidian-browsable.
-2. **A hook pipeline** — small TypeScript scripts invoked by the agent harness at lifecycle events (session start, every message, after writes, before compaction, at session end).
+2. **A hook pipeline** — small TypeScript scripts invoked by the agent harness at lifecycle events (session start, every message, after writes, before compaction, after each response; Gemini at session end).
 3. **A semantic search layer (QMD)** — a separate CLI + SQLite index + MCP server, all scoped to a named index read from `vault-manifest.json`.
 4. **The `om` MCP server** — the vault as a service, so a session running in a *different repository* can search it, read notes, follow the graph, and record back into it.
 
@@ -28,7 +28,7 @@ flowchart TB
     end
     subgraph Foreign["Agent session in ANOTHER repo"]
         FSession["Coding session"]
-        FConfig[".mcp.json entry<br/>+ that repo's own CLAUDE.md"]
+        FConfig[".mcp.json entry<br/>+ that repo's own instruction file"]
     end
     subgraph Vault["Obsidian vault"]
         Manifest["vault-manifest.json<br/>(source of truth)"]
@@ -70,7 +70,7 @@ Two actors do the work, and the boundary between them is the most important desi
 
 **Procedural code owns the environment.** Hooks in `.claude/scripts/` classify messages, validate writes, maintain the QMD index, inject context at session start, and back up transcripts before compaction. None of this logic is in the agent's head. It runs identically whether the agent is Claude Code, Codex, or Gemini, and it produces deterministic, testable behavior — every contract in `.claude/scripts/lib/` is locked by a unit suite, run in CI on every push.
 
-**The agent owns content.** Writing notes, choosing where to file them, adding wikilinks, updating indexes, promoting thinking drafts, drafting review briefs — these are judgments, not rules, and they live with the agent. `CLAUDE.md` documents the conventions the agent should follow; it does not replace the agent's judgment.
+**The agent owns content.** Writing notes, choosing where to file them, adding wikilinks, updating indexes, promoting thinking drafts, drafting review briefs — these are judgments, not rules, and they live with the agent. `AGENTS.md` documents the conventions the agent should follow; it does not replace the agent's judgment.
 
 The two halves meet at small, well-defined handoffs: hooks inject context and routing hints through stdout, the agent reads the vault and calls Write or Edit. Neither side reaches across the boundary. This is what keeps the hooks portable (no agent-specific logic) and keeps the agent's tokens pointed at judgment rather than bookkeeping.
 
@@ -98,7 +98,9 @@ Because those memories are written from many repos and read by many repos, each 
 
 Session cost stays flat regardless of vault size because it is **enforced**, not merely intended. Two of those inputs grow with the vault — the file listing grows with every note, the North Star excerpt with every status edit — so without a ceiling the eager layer drifts upward a little every day and nobody notices until a session is paying for it. A byte budget holds the total; over it, the cheapest-to-lose sections degrade to pointers, worst-priority first, and the closing size meter names each one it dropped. Line-based caps cannot do this job: shortening entries under a line cap just slides the window deeper and refills it. Budget and listing-collapse threshold are set in `vault-manifest.json`.
 
-**The budget is a runaway guard, not a squeeze — set it above everything worth injecting.** The meter is the detector; the budget is only the emergency brake. A ceiling low enough to bite in normal use degrades your context every session instead of catching a problem, and the two failures are not symmetric: a ceiling set too high still leaves the drift visible in the meter every session, while one set too low silently removes context you never learn you were missing. If the budget starts firing, the right response is usually to raise it and look at what grew — not to accept running degraded.
+**The budget has a hard ceiling it cannot be raised past: Claude Code's hook output cap.** Claude Code caps a hook's plain stdout at 10,000 characters, with no setting to raise it. Over the cap, the session gets a file path and the first 2,000 characters, and Claude Code does not ask the model to read the rest. A budget above the cap never binds: nothing degrades, the meter on the last line is the first thing lost, and the meter the user reads still looks healthy (#254). So `session-start.ts` clamps any budget, set or unset, to the cap less room for the meter (9,100 bytes; bytes are never fewer than characters, so this holds the character cap too). When it clamps a configured value, the meter says so. The sections that never degrade (the date, open tasks, hygiene) could still pass the cap on their own, so the whole output is fitted as a backstop: cut on a line, marked where it was cut, the meter still last and saying it was "truncated to fit the hook output cap".
+
+**Within that ceiling, the budget is a runaway guard, not a squeeze.** The meter is the detector; the budget is the emergency brake. A ceiling low enough to bite in normal use degrades your context every session instead of catching a problem. If the budget starts firing, look at what grew. It can no longer be raised past the cap, so the fix is to make the section smaller or let it degrade to its pointer. Content a session must always have, in full, belongs in an instruction file (`AGENTS.md`, plus `.claude/rules/` on Claude Code), which this cap does not apply to.
 
 The same asymmetry decides *what* may degrade. Rank the eager layer by **value density, not size**: filenames are the cheapest bytes (one Glob rebuilds them), so the listing surrenders first. Anything irreplaceable — identity, personal context, correctness guards — carries no fallback and is never traded for plumbing. Optimizing this layer means removing **duplication**, not **information**, which is exactly why re-entry via resume/compact drops the static bulk: it is already in the conversation, so omitting it loses nothing.
 
@@ -120,7 +122,7 @@ The hook scripts, subagent prompts, command definitions, and vault conventions a
 | Which files are user content? | `user_content_roots[]`, `scaffold{}` |
 | What frontmatter is required for each note type? | `frontmatter_required{}` |
 | Which notes does the `om` server serve, and where do memories live? | `mcp_exposed_roots[]`, `mcp_never_expose[]`, `memory_root`, `mcp_inbox` |
-| How much context may the eager layer spend? | `eager_layer_budget_bytes`, `listing_collapse_threshold` |
+| How much context may the eager layer spend? | `eager_layer_budget_bytes` (as hook output, held under the 10,000-char hook cap), `eager_layer_instruction_budget_bytes` (when the mod delivers it as an instruction file), `listing_collapse_threshold` |
 | Which model does a `reason` spawn run on? | `reason.model` — unset means the user's own CLI default |
 
 The `qmd_index` field is the most load-bearing. **Five independent callers** read it, and they fail *silently* when they disagree — one writes to a store another never reads, which surfaces only as "0 documents" or as an empty search:
@@ -177,7 +179,7 @@ sequenceDiagram
         User->>Agent: prompt
         Agent->>Hooks: UserPromptSubmit
         Hooks->>Hooks: classify (decision, incident, win, 1:1, ...)
-        Hooks-->>Agent: routing hints
+        Hooks-->>Agent: routing hints + any Stop report saved last turn
     end
 
     loop each Write/Edit to .md
@@ -191,18 +193,33 @@ sequenceDiagram
     Agent->>Hooks: PreCompact
     Hooks->>Vault: back up transcript to thinking/session-logs/
 
-    User->>Agent: end session
-    Agent->>Hooks: Stop
-    Hooks-->>Agent: wrap-up checklist reminder
+    loop each completed response
+        Agent->>Hooks: Stop
+        Hooks->>QMD: debounced refresh (detached)
+        Hooks-->>User: short summary, one line per section, first time this session or when changed
+        Hooks->>Hooks: save the full report for the next prompt
+    end
 ```
 
 A few specific design choices are worth calling out:
 
-- **`SessionStart` injects, it does not load.** It builds a briefing (filename listing, North Star excerpt, git summary, open tasks aggregated from `work/active/` and the vault root) and hands it to the agent. Full note contents never flow through this hook. Its size is bounded by `eager_layer_budget_bytes` and reported by the meter on the last line of every injection, so the cost is visible rather than assumed. The open-tasks scan is filesystem-only so the hook never spawns the Obsidian CLI — that subprocess flashes the Electron app on macOS when no instance is running (#83).
-- **`UserPromptSubmit` classifies, it does not route.** It tags the prompt with hints like `ARCHITECTURE discussion` or `DECISION`; the agent decides where to file. Keeping the hook opinion-free means the routing logic lives in `CLAUDE.md`, which is editable per-user without touching scripts.
-- **QMD refresh is shared, debounced, and detached.** Three hook entries fire the same refresh helper — `PostToolUse` (after `.md` writes), `PreCompact` (before transcript backup; writes tend to cluster before compaction), and `Stop` (end of session) — sharing one sentinel file so a burst of events produces at most one worker per debounce window. The actual indexing runs in `.claude/scripts/qmd-refresh-run.ts` as a detached, stdio-silent worker (`qmd update` → `qmd embed` → tail-chase `qmd update`), so the parent hook returns in milliseconds and nothing flows to the agent's context.
+- **`SessionStart` injects, it does not load.** It builds a briefing (filename listing, North Star excerpt, git summary, open tasks aggregated from `work/active/` and the vault root) and hands it to the agent. Full note contents never flow through this hook. Its size is bounded by `eager_layer_budget_bytes`, held under Claude Code's 10,000-character hook output cap, and reported by the meter on the last line of every injection, so the cost is visible rather than assumed. When the template's Claude Code mod delivers the same briefing as an instruction file instead, the hook stands down and the briefing is bounded by `eager_layer_instruction_budget_bytes`, since instruction files are not under the hook cap (#264). The same backstop holds there, in bytes: sections that never degrade are cut at the budget plus the meter's room, and the meter says "truncated to fit the instruction budget". The open-tasks scan is filesystem-only so the hook never spawns the Obsidian CLI — that subprocess flashes the Electron app on macOS when no instance is running (#83).
+- **`UserPromptSubmit` classifies, it does not route.** It tags the prompt with hints like `ARCHITECTURE discussion` or `DECISION`; the agent decides where to file. Keeping the hook opinion-free means the routing logic lives in `AGENTS.md`, which is editable per-user without touching scripts.
+- **QMD refresh is shared, debounced, and detached.** Three hook entries fire the same refresh helper — `PostToolUse` (after `.md` writes), `PreCompact` (before transcript backup; writes tend to cluster before compaction), and `Stop` (after a response) — sharing one sentinel file so a burst of events produces at most one worker per debounce window. The actual indexing runs in `.claude/scripts/qmd-refresh-run.ts` as a detached, stdio-silent worker (`qmd update` → `qmd embed` → tail-chase `qmd update`), so the parent hook returns in milliseconds and nothing flows to the agent's context.
 - **`PreCompact` also backs up the transcript.** In addition to kicking the QMD refresh, it copies the current session transcript out to `thinking/session-logs/` so long conversations remain recoverable after compaction.
-- **`Stop` is deliberately lightweight.** Beyond triggering the shared refresh, it only prints a short checklist. For a thorough review, the user invokes `/om-wrap-up` explicitly. Putting heavy logic in a Stop hook would slow every session exit and surprise the user.
+- **`Stop` reports once, not every turn.** Claude and Codex fire it whenever the agent finishes a response, not when the session ends (#252). It triggers the shared refresh every time, but shows the checklist and hygiene findings only the first time a session sees that exact report, and again when the findings change; otherwise it returns the empty JSON envelope. A warning that repeats unchanged is one users learn to ignore (#155). The dedupe reuses the classifier's per-session state shape (#107): one self-pruning file, failing open to "show" on a missing `session_id` or unreadable state.
+- **A changed `Stop` report reaches the agent too (#256).** A `systemMessage` is shown to the user and never added to the model's context, so the drift the agent is best placed to fix never reached it. And every `Stop` output that does reach the model is printed in full for the user: a `decision: "block"` reason under a "Stop hook error" label (v8.5.0 shipped that), `Stop` `additionalContext` under "Stop hook feedback". `UserPromptSubmit` `additionalContext` is the one channel that reaches the model and is never shown. So when the findings change, `Stop` shows the user a one-line-per-section summary and saves the full report for the session (`lib/stop-handoff.ts`: written atomically, claimed by rename so it is delivered once, the newest report wins, a week-old one is pruned). The next prompt's `classify-message` takes it and hands it to the agent beside any routing hints, with a preface telling it to deal with the user's message first. If the report cannot be saved, `Stop` sends it as feedback instead (Claude Code; Codex's handling of Stop feedback is unverified): visible, but never lost. `SessionEnd` and a `Stop` without a `session_id` have no next prompt to ride, so the user gets the full report.
+- **Why not `SessionEnd`.** It looks like the natural home for an end-of-session checklist, but Claude Code discards a SessionEnd hook's `systemMessage`, and Codex documents SessionEnd as advisory and does not surface its `systemMessage`. Wired there, the checklist would reach nobody on two of the three agents. Gemini does display it during shutdown, so Gemini keeps its SessionEnd wiring. The acting path is `/om-wrap-up`, which runs the hygiene pass while tools are still live.
+
+### The Claude Code mod
+
+Claude Code 2.1.287 added mods: plugins whose code runs inside Claude Code and can wrap the settings-hook events as `classic.<Event>` (PreToolUse rides `tool.call` instead). The template ships one, `obsidian-mind`, at `.claude/skills/obsidian-mind/`; Claude Code loads it in place once the vault folder is trusted, from the session's working folder only.
+
+- **The hooks stay the engine.** Codex and Gemini have no mods, and on Claude Code the mod does not load everywhere (an older CLI, an untrusted folder, a session started in a subfolder, managed-only policy). So the mod adds no behaviour of its own: it runs the same scripts and only changes the channel their output reaches the session through.
+- **The switch rides on the event.** What the mod passes to `next()` is what the settings hooks read on stdin (`lib/om-mod.ts`). For an event it handles, the mod does its own work first and then passes `om_mod: "standdown"`, and the script exits. The flag exists only on events the mod's hook actually ran on: a mod that throws, crashed or never loaded sends the original event, and the hook runs as without it. An environment variable would outlive a dead mod and leave the hooks silent; answering the event without `next` would silence the user's own hooks too.
+- **SessionStart becomes an instruction file.** The mod runs `session-start.ts` with `om_mod: "deliver"` (the full layer, held to `eager_layer_instruction_budget_bytes`) and adds the output in `prompt.context` as a project instruction file. Claude Code re-reads instruction files after compaction and `/clear`, gives them to general-purpose subagents, and does not cut them at the hook limit. The text is kept in the mod's per-session state (`$.state`, which survives a hot reload of the module) and cleared (and redrawn) before every run that starts a conversation, so a run that fails there cannot leave an older context riding beside the full layer the settings hook then prints. A compaction keeps it: the hook's fallback there is only a pointer to a static half that, under the mod, was never in the conversation, so the last good context is the better thing to keep. It is also written to `.claude/session-context.md` (gitignored), which is where `/memory` points: unawaited, so delivery never waits on the file. The file is only what `/memory` shows: two runs seconds apart could in principle leave the older text on disk, and that case is accepted rather than guarded, since runs are minutes apart in practice.
+- **Stop becomes a line under the answer.** The mod runs `stop-checklist.ts` with `om_mod: "report"`, which returns the report as data and claims no state; the mod keeps which report each session was last given, and whether it reached the agent, by session id, in `$.store` (a file Claude Code keeps per plugin, capped at the most recent sessions). A `claude --resume` in a new process then neither repeats a report the agent had nor loses one still waiting, matching the settings hook's file-backed handoff. A report counts as delivered when a turn starts with the prompt that carried it; that turn can start inside the prompt's own `prompt.submit` (observed on 2.1.288), so the prompt is recorded as carrying it before the hook calls `next`. What is waiting to be delivered is one record in `$.state`: the report, its line and its urgent finding, and the session it is for. When the findings change it draws one line under the next main-loop answer that completes (`turn.complete`; a subagent turn, an interrupt or an error keeps the line pending), after any line a hook below already set, and attaches the full report to the next prompt the person sends (`prompt.submit` context, never shown). Prompts from peers, notifications, schedules and other plugins do not carry it, and a prompt dropped below keeps it queued. A prompt enters when it is queued, not when its turn starts, and a queued prompt can be pulled back out of the queue unrun; so the report a prompt took is held until a turn starts with that prompt (or a folded turn that contains it), and if another prompt's turn starts first, the queue being first in, first out, it goes back to be delivered with the next prompt. A duplicate delivery is possible there; a lost one is not. A report marked `urgent` is submitted from `turn.complete` as a prompt of its own, framed as the plugin's rather than the person's. The finding also rides inside the queued report, so it reaches the agent whether or not its own turn happens, and one such turn runs per prompt the person sends that actually entered: findings that keep changing while the agent fixes them cannot chain turns. Once a prompt enters with the report, a line or urgent finding still waiting is dropped, unless a newer report was queued while it entered. Every session start except a compaction (startup, `/clear`, an in-process resume or fork) drops anything queued, since `$.state` is not reset there; a compaction continues the conversation and keeps it. A dropped report never reached the agent, so its session forgets having been shown it and the same findings show again; a report the agent already had stays shown. Each such start also bumps a generation counter, and a prompt that took the report and then failed to enter puts it back only if no such start happened meanwhile, so a report in flight across a `/clear` cannot land in the new conversation. State that may have changed while a hook awaited `next` is read through `update`, never `read`: every `$.state` read in one dispatch sees one moment. The report the mod receives carries its own framing (`MOD_PREFACE`), since the user saw a line rather than a summary and the prompt may be the plugin's. The submit never comes from `classic.Stop`: Claude Code refuses it there, because it would wait on the turn the hook may be holding. The template's report has no urgent class; the field is there for a vault that adds one.
+- **The work happens before `next`.** If the script fails, the mod's hook throws before passing the flag down, Claude Code skips it, and the settings hook delivers as usual. A failure after `next` resolved would keep the stood-down result, so nothing runs after it.
 
 ---
 
@@ -214,7 +231,7 @@ QMD provides semantic search. It is the mechanism behind most of the agent's ret
 |--------|-------------|------|
 | Agent tool menu | `.mcp.json` → `qmd-mcp.mjs` | Every `mcp__qmd__*` tool call from a session inside the vault |
 | Session startup | `session-start.ts` | Re-index on every new session |
-| Mid-session refresh | `validate-write.ts` / `stop-checklist.ts` / `pre-compact.ts` → `lib/qmd-refresh.ts` (shared sentinel + debounce) → detached `qmd-refresh-run.ts` | After `.md` writes, at session end, and before compaction |
+| Mid-session refresh | `validate-write.ts` / `stop-checklist.ts` / `pre-compact.ts` → `lib/qmd-refresh.ts` (shared sentinel + debounce) → detached `qmd-refresh-run.ts` | After `.md` writes, after responses, and before compaction |
 | The `om` server | `lib/mcp-qmd-client.ts` (search) and `reindexSync` (after a write) | Every `search`, every queried `recall`, every `remember` / `record_work` |
 
 Every `qmd update` invocation re-reads the per-index YAML (`~/.config/qmd/<index>.yml`), so changes to the collection config — including the ignore list synced from `.obsidian/app.json` — propagate to every surface without a session restart.
@@ -304,7 +321,7 @@ flowchart TB
     CLI --> Store
 ```
 
-QMD is technically optional. When it isn't installed at all, the agent falls back through a preference order defined in `CLAUDE.md` and the qmd skill: MCP tools first when registered, then the `qmd` CLI, then Grep/Glob/Read as a last resort. Every fallback step is non-fatal: `.mcp.json` entries that fail to launch are skipped with a harmless warning, the hook scripts detect a missing `qmd` binary and no-op, and the operating manual tells the agent what to reach for next.
+QMD is technically optional. When it isn't installed at all, the agent falls back through a preference order defined in `AGENTS.md` and the qmd skill: MCP tools first when registered, then the `qmd` CLI, then Grep/Glob/Read as a last resort. Every fallback step is non-fatal: `.mcp.json` entries that fail to launch are skipped with a harmless warning, the hook scripts detect a missing `qmd` binary and no-op, and the operating manual tells the agent what to reach for next.
 
 ### QMD over MCP — the in-vault retrieval path
 
@@ -365,7 +382,7 @@ The split between rows 2 and 4 is load-bearing, because of an asymmetry measured
 
 A rule in `instructions` — *"never put a session URL in a commit"* — held under direct pressure and under an authority override. A positive instruction — *"consult the vault before answering questions about past decisions"* — is advisory and gets skipped whenever a nearer source exists. **A server can stop a session doing something; it cannot make one go looking.**
 
-That is why `prompts` exist (the human invokes them, so no model decision is involved) and why the install requires a pointer in the *consuming repo's own* `CLAUDE.md` — the nearest source wins, so the nearest source has to be the thing that says "go look."
+That is why `prompts` exist (the human invokes them, so no model decision is involved) and why the install requires a pointer in the *consuming repo's own* instruction file (`CLAUDE.md` or `AGENTS.md`) — the nearest source wins, so the nearest source has to be the thing that says "go look."
 
 ### The tier ladder
 
@@ -859,7 +876,7 @@ A stray `VAULT_PATH` was honoured at one point, and that name is too generic to 
 }
 ```
 
-That goes in the **consuming project's** `.mcp.json`. Then add a short section to that project's own `CLAUDE.md` telling it the vault exists and to consult it.
+That goes in the **consuming project's** `.mcp.json`. Then add a short section to that project's own instruction file (`CLAUDE.md` or `AGENTS.md`) telling it the vault exists and to consult it.
 
 Step 2 is not documentation garnish. Measured: with the server wired and no repo-side instruction, a session made **zero** vault calls and implemented a design the vault had recorded as explicitly rejected. With the instruction present, it refused and cited the note. This follows directly from the prohibition/routing asymmetry above — and it makes the repo-side snippet a shipped deliverable, since a server installed without it is a server that gets ignored.
 
@@ -869,9 +886,9 @@ Step 2 is not documentation garnish. Measured: with the server wired and no repo
 
 ## Multi-Agent Portability
 
-The same scripts serve three agents. Each agent has its own config file mapping its own event names to the shared scripts. The event vocabularies differ — Claude Code calls it `Stop`, Gemini calls it `SessionEnd`, Codex has no compaction event — but the scripts are identical, and so are the arguments they are invoked with.
+The same scripts serve three agents. Each agent has its own config file mapping equivalent lifecycle events to the shared scripts. The checklist runs on `Stop` for Claude Code and Codex (per response, deduped) and on `SessionEnd` for Gemini (at shutdown). The script branches on the documented event name and on what a payload field means, never on which agent sent it. Where agents spell one field differently, every spelling is read, so the field can never tell the agents apart: Grok's Stop sends the re-entry flag as `stopHookActive`, and the checklist reads it beside `stop_hook_active` (#323).
 
-Session-end output is the one place where that uniformity had to be earned rather than assumed. All three agents treat session-end stdout as JSON-or-nothing, but only Codex says so out loud: it reports a hook failure on plain text, while Gemini's `SessionEnd` contract silently drops anything that isn't the final JSON object, and Claude Code routes non-exempt `Stop` stdout to the debug log — read by nobody. A plain-text checklist therefore looked like it worked on two agents and broke on one, when in fact it reached none of them. `stop-checklist.ts` emits `{"systemMessage": ...}` unconditionally: `systemMessage` is the only output field all three implement with the same meaning, and emitting it unconditionally is what keeps the script from having to know which agent invoked it.
+Session-boundary output is JSON-or-nothing on all three agents. `stop-checklist.ts` emits `{}` when a Stop has nothing new to say. What the user sees is `systemMessage`, the one user-facing field all three agents share: on a Stop whose findings changed, a one-line-per-section summary, with the full report saved for the next prompt's `UserPromptSubmit` to hand to the agent unseen. Only when the report cannot be saved does it go out as Stop feedback, which Claude Code prints in full; whether Codex honours Stop feedback is unverified. SessionEnd (Gemini) has no next prompt, so there the full report is `systemMessage` only. `om-wrap-up` still owns the deliberate acting pass at the end of a session.
 
 ```mermaid
 flowchart TB
@@ -888,23 +905,31 @@ flowchart TB
         S6["stop-checklist.ts"]
         S7["qmd-refresh-run.ts<br/>(detached worker, not a hook)"]
     end
-    subgraph Manuals["Operating manuals"]
-        CM["CLAUDE.md"]
-        AM["AGENTS.md"]
-        GM["GEMINI.md"]
+    subgraph Manuals["Instruction files"]
+        AM["AGENTS.md<br/>(every agent)"]
+        RM[".claude/rules/*.md<br/>(Claude-only files, and shared<br/>sections AGENTS.md points to)"]
     end
 
     Claude --> Shared
     Codex --> Shared
     Gemini --> Shared
-    Claude -.reads.-> CM
+    Claude -.reads.-> AM
+    Claude -.reads.-> RM
+    AM -.points to.-> RM
     Codex -.reads.-> AM
-    Gemini -.reads.-> GM
+    Gemini -.reads.-> AM
 ```
 
 Commands in `.claude/commands/` are plain Markdown prompts. Claude Code invokes them as slash commands. Codex and Gemini treat them as regular prompts (users type `om-standup` without the leading slash). No SDK binding is required.
 
-Adding a fourth agent means writing one more config file and, ideally, one more operating manual if the agent reads context files natively.
+Adding another agent means writing one more config file, and making sure it reads `AGENTS.md`: natively, or through a setting the way Gemini's `context.fileName` does. There is one instruction file, so there is no second manual to keep in sync. `.claude/rules/` holds the Claude-only files and the shared sections `AGENTS.md` points to: Claude Code and Grok load every file there at session start, and other agents read a shared one when a pointer sends them.
+
+### Subagents on other agents
+
+The subagents in `.claude/agents/` handle isolated tasks (brag spotting, vault auditing, cross-linking, etc.). The prompt content is agent-agnostic markdown.
+
+- **Codex CLI**: as of the [Skills launch (Dec 2025)](https://developers.openai.com/codex/changelog), Codex discovers skills at `.agents/skills/<name>/SKILL.md` (directory-per-skill; frontmatter requires `name` and `description`). Mirror each `.claude/agents/*.md` into a `SKILL.md`, keeping the prompt body intact. See the [Codex Skills docs](https://developers.openai.com/codex/skills) for the full schema.
+- **Gemini CLI**: agents live in `.gemini/agents/`. Copy the files and adapt the YAML frontmatter fields to Gemini's schema.
 
 The `om` server sits outside this table on purpose. It speaks MCP over stdio and knows nothing about which harness is on the other end, so it needs no per-agent config at all — any MCP-capable client registers it the same way.
 
@@ -945,7 +970,7 @@ Two load paths into a session, both landing in the vault:
 
 All actual memory content lives in `brain/` as real Obsidian notes — queryable by QMD, visible in the graph, and shared across every agent (Claude Code, Codex, Gemini) because they all read the same vault.
 
-The rule that enforces this: "when asked to remember, write to the relevant `brain/` topic note, not to `~/.claude/`." It is restated in `CLAUDE.md` because it is the easiest rule to break and the hardest to detect breaking.
+The rule that enforces this: "when asked to remember, write to the relevant `brain/` topic note, not to `~/.claude/`." It is restated in `AGENTS.md` because it is the easiest rule to break and the hardest to detect breaking.
 
 ### Two stores, one vault
 
@@ -987,15 +1012,15 @@ The design makes these changes easy:
 |--------|------------|
 | Add a new note type | `vault-manifest.json` → `frontmatter_required`, and a template in `templates/` |
 | Isolate this vault from others on the same machine | automatic (folder-derived); override with `vault-manifest.json` → `qmd_index`, then re-bootstrap |
-| Add a new classification category | `.claude/scripts/classify-message.ts` + `CLAUDE.md` routing rules |
+| Add a new classification category | `.claude/scripts/classify-message.ts` + `AGENTS.md` routing rules |
 | Add a new lifecycle behavior | A new script in `.claude/scripts/` wired into all three agent configs |
-| Add a new agent (Cursor, Windsurf, …) | New config file mapping events to existing scripts, optionally a new operating manual |
+| Add a new agent (Cursor, Windsurf, …) | New config file mapping events to existing scripts; the agent reads `AGENTS.md` |
 | Add a new subagent | A new Markdown file in `.claude/agents/`, referenced from the command that invokes it |
 | Add a new Base view | A new `.base` file in `bases/`, embedded from `Home.md` if it should surface |
 | Change which notes `om` serves | `vault-manifest.json` → `mcp_exposed_roots` / `mcp_never_expose`, or tag a note `private` |
 | Move the memory store | Rename the folder in Obsidian — discovery finds it and `health` reports the drift; pin it with `memory_root` to be explicit |
 | Add a new `om` tool | A declaration in `.claude/scripts/lib/mcp-tools.ts` + a case in `mcp-server.ts` — the description is what the model reads when deciding to call it |
-| Change what the eager layer may spend | `vault-manifest.json` → `eager_layer_budget_bytes`, `listing_collapse_threshold` |
+| Change what the eager layer may spend | `vault-manifest.json` → `eager_layer_budget_bytes` (hook path), `eager_layer_instruction_budget_bytes` (mod path), `listing_collapse_threshold` |
 
 The design is hostile to these changes (on purpose):
 
