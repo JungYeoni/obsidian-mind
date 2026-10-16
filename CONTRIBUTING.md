@@ -4,10 +4,11 @@ Thanks for your interest in contributing to obsidian-mind!
 
 ## Quick Start
 
-1. Fork the repo and create a branch from `main`
-2. Make your changes
-3. Open a PR with a title following the [commit format](#pr-title-format)
-4. The maintainer will review, then merge, request changes, or close with context
+1. Pick an issue labelled `help wanted` or `good first issue` (see [Picking up an issue](#picking-up-an-issue)), or open one for what you have in mind
+2. Comment on the issue that you're taking it, then fork the repo and create a branch from `main`
+3. Make your changes
+4. Open a PR with a title following the [commit format](#pr-title-format)
+5. The maintainer will review, then merge, request changes, or close with context
 
 ## Before You Open a PR
 
@@ -22,6 +23,25 @@ Thanks for your interest in contributing to obsidian-mind!
 
 Some areas have ongoing work that isn't public yet. Opening an issue first lets us check whether the direction is already on the roadmap before you write code. Saves you from building something that can't be merged.
 
+## Picking up an issue
+
+Every open issue tells you whether it's open for contributions:
+
+| Label | What it means |
+|---|---|
+| `good first issue` | Small and self-contained. A good way in. |
+| `help wanted` | Self-contained, with the problem, the cause and how to test the fix written in the issue. Go for it. |
+| `maintainer` | Sequenced or cross-cutting work the maintainer is building, usually because other changes depend on it or it changes something every session relies on. Please don't open a PR for these. If you want to help, comment on the issue. |
+| `decision` | The deliverable is a ruling, not code. See [below](#some-issues-are-questions-and-they-close-differently). |
+| no label | Not triaged yet. Ask on the issue before starting. |
+
+A few things that save everyone time:
+
+- **Say you're on it.** Leave a one-line comment before you start, so two people don't build the same fix.
+- **Build what the issue says.** Many issues here carry measurements, decisions and an explicit scope. If you think part of it is wrong, say so on the issue first; the issue gets updated before the code changes.
+- **Move text as written, don't rewrite it.** When an issue says content moves between files (for example out of an instruction file), carry it over unchanged. Summarising or shortening it along the way drops rules that agents rely on, even when the result reads fine.
+- **Tick only what you ran.** The PR checklist is read literally. If you couldn't run something, leave the box unticked and say why. That's fine, and far more useful than a tick.
+
 ## Some issues are questions, and they close differently
 
 The tracker's default shape is "done when code lands". A few issues are not that shape: their deliverable is a **ruling**. *"Should `manifest-check` fail the build instead of only warning?"* is the type. No amount of implementation closes it, because what is missing is a decision.
@@ -35,7 +55,7 @@ The route:
 - **Code is separate.** If the ruling is "build it", the build is a new issue that the ruling unblocks. A ruling must not wait behind an implementation.
 - **A ruling that cannot be made yet is a finding, not a failure.** If it needs a measurement or usage data nobody has, say so on the issue and record what would settle it. That is a complete answer, not a deferral.
 
-This is not a rule about when a decision earns a durable record. That gate lives in [CLAUDE.md](CLAUDE.md) under Decision Records and decides whether to write one at all. This is only about giving question-shaped issues a way through, so they stop masquerading as tasks.
+This is not a rule about when a decision earns a durable record. That gate lives in [AGENTS.md](AGENTS.md) under Decision Records and decides whether to write one at all. This is only about giving question-shaped issues a way through, so they stop masquerading as tasks.
 
 ## PR Title Format
 
@@ -45,11 +65,13 @@ This is not a rule about when a decision earns a durable record. That gate lives
 type: short description
 ```
 
+**Write the description in the imperative mood**, as a command: what the change does when merged. "add", "fix", "make", "report", not "added", "adds", "fixing" or a noun phrase. A good test: the title should complete the sentence *"If merged, this PR will …"*.
+
 | Prefix | When to use | Changelog |
 |--------|-------------|-----------|
 | `feat` | New command, agent, hook, or capability | Added |
 | `fix` | Bug fix | Fixed |
-| `docs` | Documentation only (README, translations, CLAUDE.md) | Changed |
+| `docs` | Documentation only (README, translations, AGENTS.md) | Changed |
 | `refactor` | Code restructuring without behavior change | Changed |
 | `chore` | Maintenance, cleanup | Changed |
 | `build` | Build system or packaging changes | Changed |
@@ -61,13 +83,15 @@ type: short description
 
 **Examples:**
 - `feat: add /om-review command`
-- `fix: classify-message crash on empty input`
+- `fix: stop classify-message crashing on empty input`
 - `docs: update Japanese README with new commands`
 
 **Bad examples:**
-- `Feat/rename commands om prefix` — wrong format, casing
-- `Update Skills.md` — missing type prefix
-- `fix bug` — missing colon and description
+- `Feat/rename commands om prefix`: wrong format, casing
+- `Update Skills.md`: missing type prefix
+- `fix bug`: missing colon and description
+- `fix: classify-message crash on empty input`: a noun phrase, not imperative
+- `feat: added /om-review command`: past tense, not imperative
 
 ## Template Development Checklist
 
@@ -75,7 +99,9 @@ When adding or modifying commands, agents, hooks, or vault structure, **all of t
 
 | File | What to update |
 |------|---------------|
-| `CLAUDE.md` | Command table, agent table, vault structure table, counts |
+| `AGENTS.md` | Vault structure table (no command table and no counts: Write-Correctness law 6) |
+| `.claude/rules/subagents.md` | Agent table |
+| `.claude/rules/hooks-per-agent.md`, `.claude/rules/hooks-and-mod.md` | Hook tables, when a hook or its event changes |
 | `README.md` | Command table, agent table, vault structure diagram, counts |
 | `README.ja.md`, `README.ko.md`, `README.zh-CN.md` | Same as README, in the respective language |
 | `brain/Skills.md` | Command tables (by category), subagents table, workflows |
@@ -93,7 +119,7 @@ The release pipeline handles these automatically — **do not include in your PR
 
 - [ ] PR title follows `type: description` format
 - [ ] Counts match everywhere (commands, agents) if you added/removed any
-- [ ] New command/agent appears in ALL doc tables (CLAUDE.md + README + Skills.md)
+- [ ] New command/agent appears in ALL doc tables (README + Skills.md, and `.claude/rules/subagents.md` for an agent)
 - [ ] Translations flagged if you changed README.md (maintainer can handle these)
 - [ ] Tests pass: `cd .claude/scripts && npm test`
 - [ ] Any NEW guard, check, or config constraint has [demonstrated a red](#new-guards-must-demonstrate-a-red), recorded in the PR
@@ -119,6 +145,22 @@ That is one demonstrated red at introduction time, which is cheap, and it conver
 
 This is **not** a demand for permanent negative-fixture CI jobs on every guard — whether one is worth keeping stays a per-case call, and `hook-config.test.ts` shows the pattern where it is. It is also **not retroactive**: existing checks get the treatment opportunistically, when next touched.
 
+### Before recommending a Claude Code release: the delivery gate
+
+Every other check confirms that a hook **ran**. The delivery gate confirms what **arrived**: it runs real Claude Code sessions in throwaway vaults and asks the model to quote the end of its session context and a marker from its middle, at startup, after `/compact`, after `/clear` and (with the mod) from a general-purpose subagent, with the `obsidian-mind` mod and with the settings hooks alone. Hook output past 10,000 characters once reached the model as a 2,000-character preview while every log said success (#254); this is the check that catches that class.
+
+It needs a logged-in `claude` and costs model turns, so it runs by hand, not in CI. Before the README or `mod.yml` pins a Claude Code version:
+
+1. Once: make an empty folder, open it in Claude Code and accept the trust prompt. The gate builds its vaults there, so the mod loads the way a user's does (a headless session cannot accept trust).
+2. Run:
+
+```bash
+node --experimental-strip-types .github/scripts/delivery-gate.ts --trusted-dir <that folder> --self-test        # first: exits 0 when the gate can still fail
+node --experimental-strip-types .github/scripts/delivery-gate.ts --trusted-dir <that folder> --file-issue       # then: every checkpoint PASS
+```
+
+A self-test that does not exit 0 means the gate is broken: fix it before trusting a normal run. A normal run that fails files an issue with `--file-issue`, and that version is not recommended until it is resolved. What counts as PASS, FAIL and INVALID, the exit codes, and why each `/compact` and `/clear` changes the vault first are documented at the top of `.github/scripts/delivery-gate.ts`.
+
 ## Questions?
 
-Open an issue or start a discussion. For small changes, PRs are welcome directly. For anything bigger, see [Before You Open a PR](#before-you-open-a-pr).
+Open an issue or start a discussion. For small changes, PRs are welcome directly. For anything bigger, see [Before You Open a PR](#before-you-open-a-pr), and check the issue's label first ([Picking up an issue](#picking-up-an-issue)).

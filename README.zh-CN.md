@@ -194,14 +194,34 @@ QMD **在本地运行三个小模型**，因此不需要配置 API 密钥，没�
 
 | 钩子 | 触发时机 | 功能 |
 |------|---------|------|
-| 🚀 SessionStart | 启动/恢复时 | QMD 重新索引＋自愈，注入北极星焦点、活跃工作、最近变更、任务、文件列表、仓库卫生标志 — 整体受字节预算约束，末行为注入大小计量 |
-| 💬 UserPromptSubmit | 每条消息 | 对内容分类（决策、事件、成就、1:1、架构、人员、项目更新）并注入路由提示 |
+| 🚀 SessionStart | 启动/恢复时 | QMD 重新索引＋自愈，注入北极星焦点、活跃工作、最近变更、任务、文件列表、仓库卫生标志 — 整体受字节预算约束（预算本身限制在 Claude Code 的钩子输出上限之内），末行为注入大小计量 |
+| 💬 UserPromptSubmit | 每条消息 | 对内容分类（决策、事件、成就、1:1、架构、人员、项目更新）并注入路由提示；同时把上一轮的 Stop 报告交给智能体 |
 | ✍️ PostToolUse | 写入 `.md` 后 | 验证 frontmatter＋wikilinks，拦截误放的记忆文件，标记过大笔记（拆分而非删减）与写入时的主题集群 |
 | 💾 PreCompact | 上下文压缩前 | 将会话记录备份到 `thinking/session-logs/` |
-| 🏁 Stop | 会话结束时 | 检查清单＋具体漂移发现（与 SessionStart 相同的卫生扫描） |
+| 🏁 Stop | 每次响应结束后 | 检查清单＋具体漂移发现（与 SessionStart 相同的卫生扫描），每个会话显示一次，仅在内容变化时再次显示；你只看到简短摘要（每个部分一行），完整报告随你的下一条消息交给智能体，由其判断是否处理；处理交给 `om-tidy` |
 
 > [!TIP]
 > 你只需要正常对话。钩子会处理路由。
+
+### 🧩 Claude Code mod
+
+在 Claude Code 2.1.287 及以上版本中，仓库还附带一个 mod：`.claude/skills/obsidian-mind/`，一个在 Claude Code 内部运行的插件。它运行仓库自身的钩子脚本，只改变其输出到达会话的方式：
+
+- **会话上下文像 `CLAUDE.md` 一样以 instruction 文件的形式送达。** 压缩和 `/clear` 之后会被完整地重新读取（作为钩子输出时会缩减为一个指针），能送达通用子代理（钩子输出送达不了），也不会被 Claude Code 钩子输出的 10,000 字符上限截断。其预算是 `vault-manifest.json` 中的 `eager_layer_instruction_budget_bytes`；像未完成任务这样不会缩减的部分仍可能超出它。`/memory` 中显示为 `.claude/session-context.md`。
+- **Stop 报告变成回答下方的一行。** 发现项变化时，你会在 Claude 的回复下方看到 `obsidian-mind: vault check: …`，而 Claude 会随你的下一条消息收到完整报告，对你不可见。标记为紧急的发现项则会立即送达 Claude（你每发送一条消息最多一次，第二个会在报告中等待）；模板自身的报告中没有这类发现项。
+
+对于它处理的每个事件，mod 会通知对应的钩子让出。在 mod 未加载的地方，钩子与以前完全一样地运行：Codex 和 Gemini、旧版 Claude Code、在仓库子文件夹中启动的会话（请在仓库根目录启动，或 `/cd` 到根目录后执行 `/clear`）、以及未信任的文件夹。只有在你接受了 Claude Code 对该仓库的信任提示之后，mod 才会加载。
+
+mod 是没有沙箱、以你的权限运行的代码，因此在信任该文件夹之前请先检查它的行为：`claude plugin validate .claude/skills/obsidian-mind` 会列出它挂钩的每个事件和发出的每个调用（它只运行仓库自身的脚本、写入上下文文件、在自己的存储中记录每个会话看过哪份报告，并在有紧急发现项时提交一条提示）。要关闭它，在 `.claude/settings.local.json` 中加入 `"enabledPlugins": { "obsidian-mind@skills-dir": false }`。
+
+<!-- mod-validate:start -->
+对于这一版本的 mod，其输出中值得确认的两行如下：
+
+```text
+  ❯ ./register.ts hooks: classic.SessionStart, prompt.context, classic.Stop, turn.complete, prompt.submit, turn.start
+  ❯ ./register.ts calls: $.fs.write, $.process.run (via runScript), $.prompt.submit, $.session.root, $.state.get, $.state.set, $.store.get (via setShown, shownFor), $.store.set (via setShown), $.ui.invalidate
+```
+<!-- mod-validate:end -->
 
 ### ⚡ Token 效率
 
@@ -209,13 +229,13 @@ obsidian-mind **不会**将整个 vault 加载到上下文中。它使用分层�
 
 | 层级 | 内容 | 时机 | 成本 |
 |------|------|------|------|
-| **始终** | `CLAUDE.md` + SessionStart 上下文（北极星摘要、git 摘要、任务、vault 文件列表） | 会话启动时 | 以清单中的预算为上限；每次会话末尾的计量器报告实际大小 |
+| **始终** | `CLAUDE.md` + SessionStart 上下文（北极星摘要、git 摘要、任务、vault 文件列表） | 会话启动时 | 以清单中的预算为上限（预算本身限制在 Claude Code 10,000 字符的钩子输出上限之内）；每次会话末尾的计量器报告实际大小 |
 | **按需** | QMD 语义搜索结果 | Agent 需要特定上下文时 | 精准定向 |
 | **触发** | 分类路由提示 | 每条消息 | ~100 tokens |
 | **触发** | PostToolUse 验证 | `.md` 写入后 | ~200 tokens |
 | **罕见** | 完整文件读取 | 仅在明确需要时 | 可变 |
 
-SessionStart 加载**轻量级上下文** — 关键文件的简短摘要、文件名和 git 摘要，而非完整笔记内容。Agent 通过 QMD 进行语义搜索后再读取文件，因此只获取相关内容。分类钩子每条消息仅执行一次轻量级 Node 调用。验证钩子仅在 markdown 写入时触发，跳过排除的路径。 五个机制让注入层随仓库增长仍保持诚实：**来源感知注入**（resume/compact 时只重新注入易变部分——静态大块已在会话中）、每次注入末行的**注入大小计量**、真正强制执行计量结果的**注入预算**（超出上限时，最容易舍弃的部分降级为指针，且计量行会逐一列出被降级的部分——因为悄无声息的丢失比膨胀更糟）、每次写入**仅一次钩子进程**（QMD 刷新搭载在验证钩子上）、**列表折叠**（笔记数超过阈值的文件夹折叠为一行计数，因此仓库不会通过某个没人想到要配置的文件夹突破上限）。预算与阈值均可在 `vault-manifest.json` 中调整。
+SessionStart 加载**轻量级上下文** — 关键文件的简短摘要、文件名和 git 摘要，而非完整笔记内容。Agent 通过 QMD 进行语义搜索后再读取文件，因此只获取相关内容。分类钩子每条消息仅执行一次轻量级 Node 调用。验证钩子仅在 markdown 写入时触发，跳过排除的路径。 五个机制让注入层随仓库增长仍保持诚实：**来源感知注入**（resume/compact 时只重新注入易变部分——静态大块已在会话中）、每次注入末行的**注入大小计量**、真正强制执行计量结果的**注入预算**（超出上限时，最容易舍弃的部分降级为指针，且计量行会逐一列出被降级的部分——因为悄无声息的丢失比膨胀更糟）、每次写入**仅一次钩子进程**（QMD 刷新搭载在验证钩子上）、**列表折叠**（笔记数超过阈值的文件夹折叠为一行计数，因此仓库不会通过某个没人想到要配置的文件夹突破上限）。预算与阈值均可在 `vault-manifest.json` 中调整，但无论如何设置，预算都会被限制在 Claude Code 10,000 字符的钩子输出上限之内——超过上限时，会话只能收到 2,000 字符的预览。
 
 ### 🌐 与其他 Agent 配合使用
 
@@ -421,7 +441,7 @@ templates/              带有 YAML frontmatter 的 Obsidian 模板
   commands/             18 个斜杠命令
   agents/               9 个子代理
   scripts/              钩子脚本 + charcount.ts 工具
-  skills/               Obsidian + QMD 技能
+  skills/               Obsidian + QMD 技能，obsidian-mind mod
   settings.json         5 个钩子配置
 
 .scripts/                仓库级工具 — QMD 引导脚本（新克隆时运行一次）
