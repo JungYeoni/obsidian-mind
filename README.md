@@ -19,7 +19,7 @@
 > **An Obsidian vault that gives AI coding agents persistent memory.** Built for Claude Code, with working hooks for Codex CLI and Gemini CLI. Start a session, talk about your day, and the agent handles the rest — notes, links, indexes, performance tracking. Every conversation builds on the last.
 
 > [!NOTE]
-> This is [JungYeoni](https://github.com/JungYeoni)'s personal fork of [breferrari/obsidian-mind](https://github.com/breferrari/obsidian-mind), customized for their own Claude Code + Codex CLI workflow. On top of upstream it adds the `om-historical-import` workflow, Learning Debt/Knowledge templates, and extra vault-hygiene detectors (team-shared subtree boundary leak detection, a hub-only completed-status check). See [`CHANGELOG.md`](CHANGELOG.md) for the fork-specific entries.
+> This is [JungYeoni](https://github.com/JungYeoni)'s personal fork of [breferrari/obsidian-mind](https://github.com/breferrari/obsidian-mind), customized for their own Claude Code + Codex CLI workflow. On top of upstream it adds the `om-historical-import` workflow, Learning Debt/Knowledge templates, and extra vault-hygiene detectors (team-shared subtree boundary leak detection, a hub-only completed-status check). The installation commands below use this fork; see [`CHANGELOG.md`](CHANGELOG.md) for the fork-specific entries.
 
 ---
 
@@ -105,7 +105,7 @@ You: "wrap up"
 ```bash
 npm install -g shardmind
 mkdir my-vault && cd my-vault
-shardmind install github:breferrari/obsidian-mind
+shardmind install github:JungYeoni/obsidian-mind
 ```
 
 `shardmind install` writes into the current directory, so create and enter a fresh folder first. The wizard collects your name, organization, vault purpose, agents to include, and whether to enable QMD; ShardMind then initializes git, optionally bootstraps QMD, and personalizes `brain/North Star.md` with your answers. Then:
@@ -120,7 +120,7 @@ shardmind install github:breferrari/obsidian-mind
 ### Or clone directly
 
 ```bash
-git clone https://github.com/breferrari/obsidian-mind.git
+git clone https://github.com/JungYeoni/obsidian-mind.git
 ```
 
 Or use it as a **GitHub template**. Skip the wizard, get the bare template. Then run through the same 4 steps above, plus fill in **`brain/North Star.md`** with your goals (the ShardMind wizard does this for you).
@@ -624,7 +624,7 @@ This is a starting point. Adapt it to how you work:
 The easiest way — just tell your agent:
 
 ```
-Update this vault to the latest obsidian-mind from https://github.com/breferrari/obsidian-mind
+Update this vault to the latest version of my fork at https://github.com/JungYeoni/obsidian-mind
 ```
 
 The agent will pull the latest changes, resolve conflicts, and update infrastructure files. Works with Claude Code, Codex CLI, or Gemini CLI.
@@ -658,7 +658,7 @@ Already cloned obsidian-mind and want the wizard, optional modules, and three-wa
 
 ```bash
 npm install -g shardmind
-shardmind adopt github:breferrari/obsidian-mind
+shardmind adopt github:JungYeoni/obsidian-mind
 ```
 
 The 2-way diff UI walks you through any local changes, asks per-file what to keep, then writes the engine metadata. Result: a v6-managed vault with your existing content intact, ready for `shardmind update` from there forward. No re-cloning.
@@ -669,7 +669,7 @@ Using a pre-v5 obsidian-mind, or migrating from a totally different Obsidian vau
 
 ```bash
 # 1. Clone the latest obsidian-mind
-git clone https://github.com/breferrari/obsidian-mind.git ~/new-vault
+git clone https://github.com/JungYeoni/obsidian-mind.git ~/new-vault
 
 # 2. Open it in your agent
 cd ~/new-vault && claude   # or codex, or gemini

@@ -22,7 +22,7 @@
 > **Claude Code가 모든 것을 기억하게 해주는 Obsidian 볼트.** 세션을 시작하고 하루에 대해 이야기하면, Claude가 나머지를 처리합니다 — 노트, 링크, 인덱스, 성과 추적까지. 모든 대화가 이전 대화 위에 쌓입니다.
 
 > [!NOTE]
-> 이 repo는 [JungYeoni](https://github.com/JungYeoni)가 [breferrari/obsidian-mind](https://github.com/breferrari/obsidian-mind)를 fork해서 개인 Claude Code + Codex CLI 워크플로우에 맞게 커스터마이징한 버전입니다. 원본 위에 `om-historical-import` 워크플로우, Learning Debt/Knowledge 템플릿, 추가 vault-hygiene 감지 로직(team-shared subtree 경계 leak 감지, 허브 노트 전용 완료 상태 체크)을 더했습니다. fork에서만 추가된 항목은 [`CHANGELOG.md`](CHANGELOG.md)에서 확인할 수 있습니다.
+> 이 저장소는 [JungYeoni](https://github.com/JungYeoni)가 [breferrari/obsidian-mind](https://github.com/breferrari/obsidian-mind)를 포크해 개인 Claude Code + Codex CLI 작업 방식에 맞게 수정한 버전입니다. 원본에 `om-historical-import` 워크플로, Learning Debt/Knowledge 템플릿, 추가 vault-hygiene 검사(team-shared subtree 경계 누출 감지, 허브 노트 전용 완료 상태 검사)를 더했습니다. 아래 설치 명령은 이 포크를 사용하며, 포크에서 추가한 항목은 [`CHANGELOG.md`](CHANGELOG.md)에서 확인할 수 있습니다.
 
 ---
 
@@ -106,7 +106,7 @@ You: "wrap up"
 ```bash
 npm install -g shardmind
 mkdir my-vault && cd my-vault
-shardmind install github:breferrari/obsidian-mind
+shardmind install github:JungYeoni/obsidian-mind
 ```
 
 `shardmind install`은 현재 디렉토리에 기록하므로, 먼저 새 폴더를 만들고 그 안으로 이동하세요. 마법사가 이름, 조직, 볼트 목적, 포함할 에이전트, QMD 활성화 여부를 수집합니다. 이어서 ShardMind가 git을 초기화하고, 필요 시 QMD를 부트스트랩하며, 답변에 따라 `brain/North Star.md`를 개인화합니다. 그런 다음:
@@ -121,7 +121,7 @@ shardmind install github:breferrari/obsidian-mind
 ### 또는 직접 클론
 
 ```bash
-git clone https://github.com/breferrari/obsidian-mind.git
+git clone https://github.com/JungYeoni/obsidian-mind.git
 ```
 
 또는 **GitHub 템플릿**으로 사용하세요. 마법사를 건너뛰고 기본 템플릿을 받습니다. 그런 다음 위의 4단계를 진행하고, 추가로 **`brain/North Star.md`**에 목표를 작성하세요 (ShardMind 마법사를 사용하면 자동으로 처리됩니다).
@@ -516,7 +516,7 @@ YAML 프론트매터가 포함된 템플릿으로, 각각 점진적 공개를 �
 가장 간단한 방법 — 에이전트에게 말하세요:
 
 ```
-이 볼트를 최신 obsidian-mind로 업데이트해줘 https://github.com/breferrari/obsidian-mind
+이 볼트를 내 포크의 최신 버전으로 업데이트해줘 https://github.com/JungYeoni/obsidian-mind
 ```
 
 에이전트가 최신 변경사항을 가져오고, 충돌을 해결하고, 인프라 파일을 업데이트합니다. Claude Code, Codex CLI, Gemini CLI 모두에서 작동합니다.
@@ -550,7 +550,7 @@ git merge upstream/main
 
 ```bash
 npm install -g shardmind
-shardmind adopt github:breferrari/obsidian-mind
+shardmind adopt github:JungYeoni/obsidian-mind
 ```
 
 2-way diff UI가 로컬 변경 사항을 안내하고, 파일별로 무엇을 유지할지 묻고, 엔진 메타데이터를 작성합니다. 결과: 기존 콘텐츠가 그대로 유지된 v6 관리 볼트, 이후로는 `shardmind update`를 사용할 수 있습니다. 다시 클론할 필요 없음.
@@ -561,7 +561,7 @@ v5 이전 버전의 obsidian-mind를 사용 중이거나, 완전히 다른 Obsid
 
 ```bash
 # 1. 최신 obsidian-mind 클론
-git clone https://github.com/breferrari/obsidian-mind.git ~/new-vault
+git clone https://github.com/JungYeoni/obsidian-mind.git ~/new-vault
 
 # 2. 에이전트로 열기
 cd ~/new-vault && claude   # 또는 codex, gemini
